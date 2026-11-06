@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ruang Pribadi</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<meta name="theme-color" content="#2f6fe4">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Ruang">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<script>try{var t=localStorage.getItem('rp-theme')||'light';if(t!=='auto')document.documentElement.dataset.theme=t}catch(e){document.documentElement.dataset.theme='light'}</script>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">R</span>
+      <div><b>Ruang</b><small>Pribadi</small></div>
+    </div>
+    <nav id="nav" aria-label="Menu utama"></nav>
+    <div class="sidebar-foot">
+      <button class="btn ghost sm theme-btn" data-act="toggleTheme" title="Ganti tema terang/gelap"></button>
+    </div>
+  </aside>
+  <main id="view" tabindex="-1"><p class="empty">Memuat…</p></main>
+</div>
+<dialog id="modal"></dialog>
+<button id="syncPill" class="sync-pill" hidden></button>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
