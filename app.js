@@ -61,6 +61,17 @@ const ICON = {
   moon: svg('<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>'),
   sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
   download: svg('<path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 20h14"/>'),
+  image: svg('<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m20.5 16-4.5-4.5L6 19.5"/>'),
+  heading: svg('<path d="M6 4v16M18 4v16M6 12h12"/>'),
+  list: svg('<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/>'),
+  olist: svg('<path d="M10 6h10M10 12h10M10 18h10"/><path d="M4 4.5h1.5V9M4 9h3M4 14.5c.5-.7 3-.9 3 .6 0 1.2-3 2.1-3 3.4h3"/>'),
+  checklist: svg('<rect x="3.5" y="4" width="6" height="6" rx="1.5"/><path d="m4.8 7 1.3 1.3L8.4 5.8"/><rect x="3.5" y="14" width="6" height="6" rx="1.5"/><path d="M13 7h8M13 17h8"/>'),
+  quote: svg('<path d="M5 6v12"/><path d="M10 8h10M10 12h10M10 16h7"/>'),
+  callout: svg('<rect x="3.5" y="4.5" width="17" height="15" rx="3"/><path d="M8 9.5h1M8 14.5h8M11.5 9.5h4.5"/>'),
+  divider: svg('<path d="M3 12h18"/><path d="M8 7h8M8 17h8" opacity=".45"/>'),
+  codeblock: svg('<path d="m9 8-4 4 4 4M15 8l4 4-4 4"/>'),
+  cap: svg('<path d="M2.5 9.5 12 5l9.5 4.5L12 14z"/><path d="M6.5 11.5V16c0 1.4 2.5 2.8 5.5 2.8s5.5-1.4 5.5-2.8v-4.5"/><path d="M21.5 9.5v5"/>'),
+  more: svg('<circle cx="5.5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="18.5" cy="12" r="1.4"/>'),
   run: svg('<path d="M3 12h4l3-8 4 16 3-8h4"/>'),
   reset: svg('<path d="M4 12a8 8 0 1 0 2.4-5.7L4 8.5"/><path d="M4 4v4.5h4.5"/>'),
   link: svg('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
@@ -87,8 +98,10 @@ const api = {
 };
 
 const S = {
-  notes: [], todos: [], transactions: [], habits: [], workouts: [],
+  notes: [], todos: [], transactions: [], habits: [], workouts: [], courses: [],
   ui: {
+    todoKind: 'kuliah', lastCourse: '', flash: null, quickKind: 'kuliah',
+    hMonth: monthKey(new Date()), kTab: 'semester', kFilter: 'semua', kQuery: '',
     wMonth: monthKey(new Date()), wType: '', wDay: '',
     view: 'beranda', focus: null,
     noteId: null, noteQuery: '', noteTag: '', notePreview: false,
@@ -126,7 +139,8 @@ async function del(col, id) {
 /* ================================================================ CLOUD (Supabase) */
 /* Mode cloud aktif bila config.js (atau form setup) berisi URL & key Supabase.
    Data disimpan lokal dulu (bisa offline), lalu dikirim lewat antrian (outbox). */
-const COLS = ['notes', 'todos', 'transactions', 'habits', 'workouts'];
+const COLS = ['notes', 'todos', 'transactions', 'habits', 'workouts', 'courses'];
+const BUCKET = 'ruang';
 const CFG_KEY = 'rp-cloud-config', SES_KEY = 'rp-session', CACHE_KEY = 'rp-cache', OUT_KEY = 'rp-outbox';
 const PAGE = 1000;
 
@@ -241,6 +255,47 @@ const cloud = {
       this.saveOutbox();
     }
   },
+  async upload(blob) {
+    const tok = await this.token();
+    const ext = { 'image/webp': 'webp', 'image/png': 'png', 'image/gif': 'gif' }[blob.type] || 'jpg';
+    const path = `${this.session.user.id}/${uid()}.${ext}`;
+    let r;
+    try {
+      r = await fetch(`${this.cfg.url}/storage/v1/object/${BUCKET}/${path}`, {
+        method: 'POST', headers: { apikey: this.cfg.key, Authorization: 'Bearer ' + tok, 'Content-Type': blob.type || 'image/jpeg', 'x-upsert': 'false', 'cache-control': '31536000' }, body: blob,
+      });
+    } catch (e) { throw Object.assign(new Error('Tidak ada koneksi — gambar belum bisa diunggah'), { network: true }); }
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      const raw = JSON.stringify(d);
+      throw new Error(/bucket|not found|row-level|policy|unauthorized|403|404/i.test(raw + r.status)
+        ? 'Penyimpanan gambar belum disiapkan. Jalankan SETUP-SUPABASE-GAMBAR.sql di Supabase.' : (d.message || d.error || `Unggah gagal (HTTP ${r.status})`));
+    }
+    return path;
+  },
+  async signUrls(paths) {
+    const tok = await this.token();
+    let r;
+    try {
+      r = await fetch(`${this.cfg.url}/storage/v1/object/sign/${BUCKET}`, {
+        method: 'POST', headers: { apikey: this.cfg.key, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expiresIn: 7 * 86400, paths }),
+      });
+    } catch (e) { throw netError(); }
+    if (!r.ok) throw new Error(`Gagal memuat gambar (HTTP ${r.status})`);
+    return r.json();
+  },
+  fullSignedUrl(u) {
+    if (/^https?:/.test(u)) return u;
+    return this.cfg.url + (u.startsWith('/storage/') ? '' : '/storage/v1') + u;
+  },
+  async removeFiles(paths) {
+    if (!paths.length) return;
+    try {
+      const tok = await this.token();
+      await fetch(`${this.cfg.url}/storage/v1/object/${BUCKET}`, { method: 'DELETE', headers: { apikey: this.cfg.key, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify({ prefixes: paths }) });
+    } catch (e) {}
+  },
   async replaceAll(collections) {
     await this.flush();
     await this.rest('DELETE', '?id=not.is.null', undefined, 'return=minimal');
@@ -305,7 +360,8 @@ function setSync(state, msg) { cloud.state = state; cloud.msg = msg || ''; updat
 function updateSyncPill() {
   const el = $('#syncPill');
   if (!el) return;
-  if (!cloud.active || !cloud.session) { el.hidden = true; return; }
+  el.hidden = true; /* status sinkron disembunyikan; lihat di menu Data */
+  if (!cloud.active || !cloud.session || true) return;
   const n = cloud.outbox.length;
   const txt = {
     ok: n ? `Menunggu kirim (${n})` : 'Tersinkron',
@@ -414,23 +470,27 @@ const CLOUD_ACT = {
 
 
 /* ================================================================ router */
+/* [kunci, label, ikon, label pendek, tampil di bar bawah HP] */
 const NAV = [
-  ['beranda', 'Beranda', 'home'],
-  ['catatan', 'Catatan', 'note'],
-  ['tugas', 'Tugas', 'task'],
-  ['keuangan', 'Keuangan', 'wallet', 'Uang'],
-  ['olahraga', 'Olahraga', 'run'],
-  ['kebiasaan', 'Kebiasaan', 'habit', 'Habit'],
-  ['data', 'Data', 'data'],
+  ['beranda', 'Beranda', 'home', '', 1],
+  ['tugas', 'Tugas', 'task', '', 1],
+  ['catatan', 'Catatan', 'note', '', 1],
+  ['kuliah', 'Studi', 'cap', '', 0],
+  ['keuangan', 'Keuangan', 'wallet', 'Uang', 1],
+  ['olahraga', 'Olahraga', 'run', '', 1],
+  ['kebiasaan', 'Kebiasaan', 'habit', 'Habit', 0],
+  ['data', 'Data', 'data', '', 0],
 ];
 const VIEWS = {
-  beranda: renderHome, catatan: renderNotes, tugas: renderTodos,
+  beranda: renderHome, catatan: renderNotes, tugas: renderTodos, kuliah: renderKuliah,
   keuangan: renderMoney, olahraga: renderSport, kebiasaan: renderHabits, data: renderData,
 };
 
 function buildNav() {
-  $('#nav').innerHTML = NAV.map(([k, label, ic, short]) =>
-    `<a href="#${k}" data-view="${k}">${ICON[ic]}<span class="nl">${label}</span><span class="ns">${short || label}</span><b class="badge" data-badge="${k}" hidden></b></a>`).join('');
+  let mi = NAV.filter(n => !n[4]).length;
+  $('#nav').innerHTML = NAV.map(([k, label, ic, short, main]) =>
+    `<a href="#${k}" data-view="${k}" class="${main ? '' : 'nav-more'}" ${main ? '' : `style="--i:${--mi}"`}>${ICON[ic]}<span class="nl">${label}</span><span class="ns">${short || label}</span><b class="badge" data-badge="${k}" hidden></b></a>`).join('')
+    + `<button type="button" class="nav-more-btn" data-act="navMore" aria-label="Menu lainnya">${ICON.more}<span class="ns">Lainnya</span></button>`;
 }
 
 async function route() {
@@ -439,8 +499,11 @@ async function route() {
   if (S.ui.view === 'catatan' && next !== 'catatan') await leaveNote();
   S.ui.view = next;
   $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view === next));
+  document.body.classList.remove('more-open');
+  const moreBtn = $('.nav-more-btn'); if (moreBtn) moreBtn.classList.toggle('active', !NAV.find(n => n[0] === next)[4]);
   const label = NAV.find(n => n[0] === next)[1];
   document.title = `${label} · Ruang Pribadi`;
+  closeSlash(); hideBubble();
   render();
   window.scrollTo(0, 0);
 }
@@ -450,6 +513,7 @@ function render() {
   updateBadges();
   if (S.ui.view === 'olahraga') updateTimerDom();
   if (S.ui.view === 'data') loadHpInfo();
+  if (S.ui.view === 'catatan') mountNoteEditor();
   if (S.ui.focus) { const el = $(S.ui.focus); if (el) { el.focus(); if (el.setSelectionRange && el.type !== 'date') { const n = el.value.length; try { el.setSelectionRange(n, n); } catch (e) {} } } S.ui.focus = null; }
 }
 
@@ -465,9 +529,12 @@ function renderHome() {
   const now = new Date(), t = ymd(now), h = now.getHours();
   const greet = h < 11 ? 'Selamat pagi' : h < 15 ? 'Selamat siang' : h < 18 ? 'Selamat sore' : 'Selamat malam';
   const open = S.todos.filter(x => !x.done);
-  const late = open.filter(x => x.due && x.due < t).length;
-  const focus = open.filter(x => x.due && x.due <= t).sort(sortTodos);
-  const next = open.filter(x => !x.due || x.due > t).sort(sortTodos).slice(0, Math.max(0, 5 - focus.length));
+  const late = open.filter(isLate).length;
+  const kul = open.filter(x => todoKind(x) === 'kuliah').sort(sortTodos);
+  const kulSoon = kul.filter(x => x.due && x.due <= addDays(t, 7));
+  const kulShow = [...kulSoon, ...kul.filter(x => !kulSoon.includes(x))].slice(0, 6);
+  const umumToday = open.filter(x => todoKind(x) === 'umum' && (!x.due || x.due <= t)).sort(sortTodos).slice(0, 6);
+  const qk = S.ui.quickKind;
 
   const m = monthKey(now);
   const tx = S.transactions.filter(x => (x.date || '').startsWith(m));
@@ -484,14 +551,23 @@ function renderHome() {
     <h1>${greet}.</h1></div>
   </header>
 
-  <form class="quick" data-form="quickTodo">
-    ${ICON.plus}
-    <input name="title" placeholder="Tangkap cepat: tugas untuk hari ini… (Enter)" autocomplete="off" aria-label="Tugas baru">
-    <button class="btn primary sm">Tambah</button>
+  <form class="quick k-${qk}" data-form="quickTodo">
+    <div class="seg mini" role="radiogroup" aria-label="Jenis">
+      <label><input type="radio" name="kind" value="kuliah" ${qk === 'kuliah' ? 'checked' : ''} data-change="quickKind"><span>📚 Tugas kuliah</span></label>
+      <label><input type="radio" name="kind" value="umum" ${qk === 'umum' ? 'checked' : ''} data-change="quickKind"><span>✅ To-do</span></label>
+    </div>
+    <div class="quick-row">
+      <input name="title" placeholder="${qk === 'kuliah' ? 'Tugas kuliah baru… (Enter)' : 'To-do baru untuk hari ini… (Enter)'}" autocomplete="off" aria-label="Judul" required>
+      <input class="only-kuliah q-course" name="course" list="qCourses" placeholder="Mata kuliah" value="${esc(S.ui.lastCourse)}" autocomplete="off" aria-label="Mata kuliah">
+      <input type="date" name="due" aria-label="Tanggal / deadline" title="${qk === 'kuliah' ? 'Deadline' : 'Tanggal (kosong = hari ini)'}">
+      <input type="time" name="time_end" aria-label="Jam" title="${qk === 'kuliah' ? 'Jam deadline' : 'Jam'}">
+      <button class="btn primary">${ICON.plus}<span>Tambah</span></button>
+    </div>
+    <datalist id="qCourses">${courseNames().map(l => `<option value="${esc(l)}">`).join('')}</datalist>
   </form>
 
   <div class="stats">
-    ${stat('Tugas aktif', open.length, late ? `${late} terlambat` : 'tidak ada yang terlambat', late ? 'warn' : '')}
+    ${stat('Tugas kuliah aktif', kul.length, late ? `${late} terlambat` : kulSoon.length ? `${kulSoon.length} deadline ≤ 7 hari` : 'aman', late ? 'warn' : '')}
     ${stat('Kebiasaan hari ini', `${hbDone}/${hb.length}`, !hb.length ? 'belum ada kebiasaan' : hbDone === hb.length ? 'semua beres 👏' : 'ayo lanjutkan', hb.length && hbDone === hb.length ? 'good' : '')}
     ${stat('Pengeluaran bulan ini', rupiah(out), `hari ini ${rupiah(todayOut)}`)}
     ${stat('Selisih bulan ini', rupiah(inc - out), `pemasukan ${rupiah(inc)}`, inc - out < 0 ? 'warn' : 'good')}
@@ -499,12 +575,14 @@ function renderHome() {
 
   <div class="home-grid">
     <section class="card">
-      <div class="card-head"><h2>Fokus hari ini</h2><a class="link" href="#tugas">Semua tugas →</a></div>
-      ${focus.length ? `<ul class="todo-list">${focus.map(todoRow).join('')}</ul>` : `<p class="empty">Tidak ada tugas yang jatuh tempo hari ini.</p>`}
-      ${next.length ? `<p class="group-label">Berikutnya</p><ul class="todo-list">${next.map(todoRow).join('')}</ul>` : ''}
+      <div class="card-head"><h2>📚 Deadline tugas kuliah</h2><a class="link" href="#tugas" data-act="goTodos" data-v="kuliah">Semua →</a></div>
+      ${kulShow.length ? `<ul class="todo-list">${kulShow.map(x => todoRow(x)).join('')}</ul>` : `<p class="empty">Tidak ada tugas kuliah. 🎉</p>`}
+      <div class="card-head sub"><h2>✅ To-do hari ini</h2><a class="link" href="#tugas" data-act="goTodos" data-v="umum">Semua →</a></div>
+      ${umumToday.length ? `<ul class="todo-list">${umumToday.map(x => todoRow(x)).join('')}</ul>` : `<p class="empty">Belum ada to-do untuk hari ini.</p>`}
     </section>
 
     <div class="stack">
+    ${homeStudyCard()}
     <section class="card">
       <div class="card-head"><h2>Kebiasaan</h2><a class="link" href="#kebiasaan">Kelola →</a></div>
       ${hb.length ? hb.map(x => {
@@ -554,25 +632,54 @@ function stat(label, value, sub, tone = '') {
 const PRIO = { tinggi: 0, sedang: 1, rendah: 2 };
 const PRIO_LABEL = { tinggi: 'Tinggi', sedang: 'Sedang', rendah: 'Rendah' };
 const prioOptions = sel => Object.keys(PRIO).map(k => `<option value="${k}" ${k === (sel || 'sedang') ? 'selected' : ''}>${PRIO_LABEL[k]}</option>`).join('');
+const TASK_TYPES = ['Tugas', 'Laporan', 'Kuis', 'Presentasi', 'Praktikum', 'Proyek', 'UTS', 'UAS'];
+const typeOptions = sel => `<option value="">—</option>` + TASK_TYPES.map(k => `<option ${k === sel ? 'selected' : ''}>${k}</option>`).join('');
 
+/* tugas lama (sebelum ada pembagian) otomatis dianggap tugas kuliah, kecuali daftarnya jelas non-kuliah */
+const todoKind = x => x.kind || (x.list && !/kuliah|tugas|kampus/i.test(x.list) ? 'umum' : 'kuliah');
+const fmtTime = s => (s ? s.replace(':', '.') : '');
+const nowHM = () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+function timeLabel(x) {
+  const a = fmtTime(x.time_start), b = fmtTime(x.time_end);
+  if (todoKind(x) === 'kuliah') return b ? `pukul ${b}` : '';
+  return a && b ? `${a}–${b}` : a ? `${a}` : b ? `s/d ${b}` : '';
+}
+const deadlineKey = x => `${x.due || '9999-99-99'} ${x.time_start || x.time_end || '99:99'}`;
+function isLate(x) {
+  if (x.done || !x.due) return false;
+  const t = ymd();
+  if (x.due < t) return true;
+  return x.due === t && !!x.time_end && x.time_end < nowHM();
+}
 function sortTodos(a, b) {
-  const da = a.due || '9999-99-99', db = b.due || '9999-99-99';
+  const da = deadlineKey(a), db = deadlineKey(b);
   return (a.done - b.done) || (da < db ? -1 : da > db ? 1 : 0)
     || ((PRIO[a.priority] ?? 1) - (PRIO[b.priority] ?? 1)) || (a.created_at - b.created_at);
 }
+function courseNames() {
+  return uniq([
+    ...(S.courses || []).filter(c => c.status === 'diambil' && c.name).map(c => c.name).sort(),
+    ...S.todos.filter(x => todoKind(x) === 'kuliah').map(x => x.course),
+  ]);
+}
 
-function todoRow(x) {
-  const t = ymd();
-  const late = !x.done && x.due && x.due < t;
-  const today = !x.done && x.due === t;
-  return `<li class="todo ${x.done ? 'done' : ''} prio-${x.priority || 'sedang'}">
+function todoRow(x, opts = {}) {
+  const t = ymd(), kind = todoKind(x);
+  const late = isLate(x), today = !x.done && x.due === t;
+  const tl = timeLabel(x);
+  const dl = x.due && !x.done && kind === 'kuliah' ? daysBetween(t, x.due) : 0;
+  const hMinus = dl > 1 && dl <= 14 ? ` · H-${dl}` : '';
+  return `<li class="todo ${x.done ? 'done' : ''} prio-${x.priority || 'sedang'} ${S.ui.flash === x.id ? 'flash' : ''}">
     <button class="check" data-act="toggleTodo" data-id="${x.id}" aria-label="${x.done ? 'Batalkan selesai' : 'Tandai selesai'}">${x.done ? ICON.check : ''}</button>
     <div class="todo-main" data-act="editTodo" data-id="${x.id}" title="Klik untuk mengubah">
       <span class="todo-title">${esc(x.title)}</span>
       <span class="meta">
-        ${x.due ? `<span class="chip ${late ? 'late' : today ? 'today' : ''}">${late ? 'Terlambat · ' : ''}${relDay(x.due)}</span>` : ''}
+        ${x.due ? `<span class="chip ${late ? 'late' : today ? 'today' : ''}">${late ? 'Terlambat · ' : ''}${relDay(x.due)}${tl ? ' · ' + tl : ''}${hMinus}</span>` : tl ? `<span class="chip">${tl}</span>` : ''}
+        ${kind === 'kuliah' && x.course ? `<span class="chip course">${esc(x.course)}</span>` : ''}
+        ${kind === 'kuliah' && x.ttype ? `<span class="chip">${esc(x.ttype)}</span>` : ''}
+        ${kind === 'umum' && x.list ? `<span class="chip">${esc(x.list)}</span>` : ''}
         ${x.priority === 'tinggi' ? '<span class="chip hi">Penting</span>' : ''}
-        ${x.list ? `<span class="chip">${esc(x.list)}</span>` : ''}
+        ${opts.showKind && kind === 'umum' ? '<span class="chip kind">To-do</span>' : ''}
       </span>
       ${x.notes ? `<span class="todo-notes">${esc(x.notes)}</span>` : ''}
     </div>
@@ -581,22 +688,63 @@ function todoRow(x) {
 }
 
 function todoGroups(items, t) {
-  const tm = addDays(t, 1);
-  const g = [['Terlambat', []], ['Hari ini', []], ['Besok', []], ['Nanti', []], ['Tanpa tanggal', []]];
-  for (const x of items) g[!x.due ? 4 : x.due < t ? 0 : x.due === t ? 1 : x.due === tm ? 2 : 3][1].push(x);
+  const tm = addDays(t, 1), wk = addDays(t, 7);
+  const g = [['Terlambat', []], ['Hari ini', []], ['Besok', []], ['7 hari ke depan', []], ['Nanti', []], ['Tanpa tanggal', []]];
+  for (const x of items) {
+    const i = !x.due ? 5 : isLate(x) ? 0 : x.due === t ? 1 : x.due === tm ? 2 : x.due <= wk ? 3 : 4;
+    g[i][1].push(x);
+  }
   return g.filter(([, a]) => a.length);
 }
 
+const TODO_FILTERS = t => ({
+  aktif: ['Aktif', x => !x.done],
+  'hari-ini': ['Hari ini', x => !x.done && x.due && x.due <= t],
+  mendatang: ['Mendatang', x => !x.done && x.due > t],
+  selesai: ['Selesai', x => x.done],
+});
+const todoGroupKey = (x, K) => (K === 'kuliah' ? x.course || '' : x.list || '');
+
+function todoFormHtml(K, preset) {
+  const lists = uniq(S.todos.filter(x => todoKind(x) === 'umum').map(x => x.list)).sort();
+  if (K === 'kuliah') {
+    return `<form class="card add-todo" data-form="addTodo">
+      <input type="hidden" name="kind" value="kuliah">
+      <input id="todoTitle" name="title" placeholder="Tugas apa? mis. Laporan praktikum bab 3" required autocomplete="off" aria-label="Judul tugas">
+      <div class="add-row">
+        <label class="grow">Mata kuliah<input name="course" list="courseList" placeholder="Pilih / ketik" value="${esc(preset)}" autocomplete="off"></label>
+        <label>Jenis<select name="ttype">${typeOptions('')}</select></label>
+        <label>Deadline<input type="date" name="due"></label>
+        <label>Jam<input type="time" name="time_end"></label>
+        <label>Prioritas<select name="priority">${prioOptions('sedang')}</select></label>
+        <button class="btn primary">${ICON.plus} Tambah</button>
+      </div>
+      <datalist id="courseList">${courseNames().map(l => `<option value="${esc(l)}">`).join('')}</datalist>
+    </form>`;
+  }
+  return `<form class="card add-todo" data-form="addTodo">
+    <input type="hidden" name="kind" value="umum">
+    <input id="todoTitle" name="title" placeholder="Apa yang mau kamu lakukan?" required autocomplete="off" aria-label="Judul to-do">
+    <div class="add-row">
+      <label>Tanggal<input type="date" name="due"></label>
+      <label>Mulai<input type="time" name="time_start"></label>
+      <label>Selesai<input type="time" name="time_end"></label>
+      <label class="grow">Kategori<input name="list" list="todoLists" placeholder="mis. Pribadi, Rumah" value="${esc(preset)}" autocomplete="off"></label>
+      <label>Prioritas<select name="priority">${prioOptions('sedang')}</select></label>
+      <button class="btn primary">${ICON.plus} Tambah</button>
+    </div>
+    <datalist id="todoLists">${lists.map(l => `<option value="${esc(l)}">`).join('')}</datalist>
+  </form>`;
+}
+
 function renderTodos() {
-  const t = ymd(), f = S.ui.todoFilter, L = S.ui.todoList;
-  const lists = uniq(S.todos.map(x => x.list)).sort();
-  const base = S.todos.filter(x => !L || x.list === L);
-  const FILTERS = {
-    aktif: ['Aktif', x => !x.done],
-    'hari-ini': ['Hari ini', x => !x.done && x.due && x.due <= t],
-    mendatang: ['Mendatang', x => !x.done && x.due > t],
-    selesai: ['Selesai', x => x.done],
-  };
+  const t = ymd(), K = S.ui.todoKind, f = S.ui.todoFilter, L = S.ui.todoList;
+  const ofKind = S.todos.filter(x => todoKind(x) === K);
+  const openCount = k => S.todos.filter(x => !x.done && todoKind(x) === k).length;
+  const lateCount = k => S.todos.filter(x => isLate(x) && todoKind(x) === k).length;
+  const lists = uniq(ofKind.map(x => todoGroupKey(x, K))).sort();
+  const base = ofKind.filter(x => !L || todoGroupKey(x, K) === L);
+  const FILTERS = TODO_FILTERS(t);
   let items = base.filter(FILTERS[f][1]);
   items = f === 'selesai'
     ? items.sort((a, b) => (b.done_at || '').localeCompare(a.done_at || '') || b.updated_at - a.updated_at)
@@ -604,28 +752,25 @@ function renderTodos() {
 
   let body;
   if (!items.length) {
-    body = `<p class="empty">${f === 'selesai' ? 'Belum ada tugas yang selesai.' : 'Tidak ada tugas di sini. 🎉'}</p>`;
+    body = `<p class="empty">${f === 'selesai' ? 'Belum ada yang selesai.' : K === 'kuliah' ? 'Tidak ada tugas kuliah di sini. 🎉' : 'Tidak ada to-do di sini.'}</p>`;
   } else if (f === 'aktif') {
     body = todoGroups(items, t).map(([label, arr]) =>
       `<p class="group-label ${label === 'Terlambat' ? 'warn' : ''}">${label} <span>${arr.length}</span></p>
-       <ul class="todo-list">${arr.map(todoRow).join('')}</ul>`).join('');
+       <ul class="todo-list">${arr.map(x => todoRow(x)).join('')}</ul>`).join('');
   } else {
-    body = `<ul class="todo-list">${items.map(todoRow).join('')}</ul>`;
+    body = `<ul class="todo-list">${items.map(x => todoRow(x)).join('')}</ul>`;
   }
+  const preset = L || (K === 'kuliah' ? S.ui.lastCourse || '' : '');
 
   return `
   <header class="page-head"><div><p class="eyebrow">To-do</p><h1>Tugas</h1></div></header>
 
-  <form class="card add-todo" data-form="addTodo">
-    <input id="todoTitle" name="title" placeholder="Apa yang perlu dikerjakan?" required autocomplete="off" aria-label="Judul tugas">
-    <div class="add-row">
-      <label>Tenggat<input type="date" name="due"></label>
-      <label>Prioritas<select name="priority">${prioOptions('sedang')}</select></label>
-      <label>Daftar<input name="list" list="todoLists" placeholder="mis. Kuliah" value="${esc(L)}" autocomplete="off"></label>
-      <button class="btn primary">${ICON.plus} Tambah</button>
-    </div>
-    <datalist id="todoLists">${lists.map(l => `<option value="${esc(l)}">`).join('')}</datalist>
-  </form>
+  <div class="kind-switch" role="tablist">
+    <button class="kind-btn ${K === 'kuliah' ? 'on' : ''}" data-act="todoKind" data-v="kuliah">📚 Tugas Kuliah <span>${openCount('kuliah')}</span>${lateCount('kuliah') ? `<i>${lateCount('kuliah')} terlambat</i>` : ''}</button>
+    <button class="kind-btn ${K === 'umum' ? 'on' : ''}" data-act="todoKind" data-v="umum">✅ To-do Umum <span>${openCount('umum')}</span></button>
+  </div>
+
+  ${todoFormHtml(K, preset)}
 
   <div class="toolbar">
     <div class="tabs" role="tablist">
@@ -634,22 +779,36 @@ function renderTodos() {
     </div>
     ${f === 'selesai' && items.length ? `<button class="btn ghost sm danger" data-act="clearDone">${ICON.trash} Hapus semua yang selesai</button>` : ''}
   </div>
-  ${lists.length ? `<div class="chips">${lists.map(l => `<button class="chip-btn ${l === L ? 'on' : ''}" data-act="todoList" data-v="${esc(l)}">${esc(l)}</button>`).join('')}</div>` : ''}
+  ${lists.filter(Boolean).length ? `<div class="chips">${lists.filter(Boolean).map(l => `<button class="chip-btn ${l === L ? 'on' : ''}" data-act="todoList" data-v="${esc(l)}">${esc(l)}</button>`).join('')}</div>` : ''}
 
   <section class="card list-card">${body}</section>`;
 }
 
 function todoModal(x) {
-  const lists = uniq(S.todos.map(y => y.list)).sort();
-  return `<form class="modal-body" data-form="editTodo" data-id="${x.id}">
-    <h2>Ubah tugas</h2>
+  const K = todoKind(x);
+  const lists = uniq(S.todos.filter(y => todoKind(y) === 'umum').map(y => y.list)).sort();
+  return `<form class="modal-body todo-form k-${K}" data-form="editTodo" data-id="${x.id}">
+    <h2>Ubah ${K === 'kuliah' ? 'tugas kuliah' : 'to-do'}</h2>
+    <div class="seg" role="radiogroup" aria-label="Jenis">
+      <label><input type="radio" name="kind" value="kuliah" ${K === 'kuliah' ? 'checked' : ''} data-change="todoFormKind"><span>📚 Tugas kuliah</span></label>
+      <label><input type="radio" name="kind" value="umum" ${K === 'umum' ? 'checked' : ''} data-change="todoFormKind"><span>✅ To-do umum</span></label>
+    </div>
     <label>Judul<input name="title" required value="${esc(x.title)}" autocomplete="off"></label>
     <label>Catatan<textarea name="notes" rows="3" placeholder="Detail, link, dll. (opsional)">${esc(x.notes || '')}</textarea></label>
-    <div class="row2">
-      <label>Tenggat<input type="date" name="due" value="${esc(x.due || '')}"></label>
-      <label>Prioritas<select name="priority">${prioOptions(x.priority)}</select></label>
+    <div class="row2 only-kuliah">
+      <label>Mata kuliah<input name="course" list="courseListM" value="${esc(x.course || '')}" autocomplete="off"></label>
+      <label>Jenis<select name="ttype">${typeOptions(x.ttype || '')}</select></label>
     </div>
-    <label>Daftar<input name="list" list="todoListsM" value="${esc(x.list || '')}" autocomplete="off"></label>
+    <div class="row3">
+      <label><span class="only-kuliah">Deadline</span><span class="only-umum">Tanggal</span><input type="date" name="due" value="${esc(x.due || '')}"></label>
+      <label class="only-umum">Mulai<input type="time" name="time_start" value="${esc(x.time_start || '')}"></label>
+      <label><span class="only-kuliah">Jam deadline</span><span class="only-umum">Selesai</span><input type="time" name="time_end" value="${esc(x.time_end || '')}"></label>
+    </div>
+    <div class="row2">
+      <label>Prioritas<select name="priority">${prioOptions(x.priority)}</select></label>
+      <label class="only-umum">Kategori<input name="list" list="todoListsM" value="${esc(x.list || '')}" autocomplete="off"></label>
+    </div>
+    <datalist id="courseListM">${courseNames().map(l => `<option value="${esc(l)}">`).join('')}</datalist>
     <datalist id="todoListsM">${lists.map(l => `<option value="${esc(l)}">`).join('')}</datalist>
     <div class="modal-actions">
       <button type="button" class="btn ghost" data-act="closeModal">Batal</button>
@@ -658,10 +817,34 @@ function todoModal(x) {
   </form>`;
 }
 
-/* ================================================================ CATATAN */
+const newTodo = d => {
+  const kind = d.kind === 'umum' ? 'umum' : 'kuliah';
+  return {
+    kind, title: String(d.title || '').trim(), due: d.due || '',
+    time_start: kind === 'umum' ? d.time_start || '' : '', time_end: d.time_end || '',
+    priority: d.priority || 'sedang',
+    course: kind === 'kuliah' ? String(d.course || '').trim() : '',
+    ttype: kind === 'kuliah' ? d.ttype || '' : '',
+    list: kind === 'umum' ? String(d.list || '').trim() : '',
+    notes: '', done: false, done_at: '',
+  };
+};
+
+/* pastikan item yang baru ditambah terlihat (penyebab "terhapus tapi tidak muncul": tersembunyi oleh filter) */
+function revealTodo(x) {
+  const t = ymd(), K = todoKind(x);
+  S.ui.todoKind = K;
+  if (!TODO_FILTERS(t)[S.ui.todoFilter][1](x)) S.ui.todoFilter = 'aktif';
+  if (S.ui.todoList && todoGroupKey(x, K) !== S.ui.todoList) S.ui.todoList = '';
+  S.ui.flash = x.id;
+  setTimeout(() => { if (S.ui.flash === x.id) S.ui.flash = null; }, 2500);
+}
+
+/* ================================================================ CATATAN (editor ala Notion) */
 const sortedNotes = arr => [...arr].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.updated_at - a.updated_at);
 const parseTags = v => uniq(String(v).split(',').map(s => s.trim().replace(/^#/, '').toLowerCase()));
 const snippet = s => String(s || '').replace(/^\s*[-*]\s+\[[ xX]\]/gm, '').replace(/[#*`>\[\]_-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 110);
+const noteHasImg = n => /<img/i.test(n.html || '');
 
 function renderNotes() {
   const n = S.ui.noteId && find('notes', S.ui.noteId);
@@ -686,33 +869,512 @@ function noteListHtml() {
     (!q || `${n.title || ''} ${n.content || ''} ${(n.tags || []).join(' ')}`.toLowerCase().includes(q))));
   return `${tags.length ? `<div class="chips">${tags.map(t => `<button class="chip-btn ${t === tag ? 'on' : ''}" data-act="noteTag" data-v="${esc(t)}">#${esc(t)}</button>`).join('')}</div>` : ''}
     ${list.length ? `<ul class="note-items">${list.map(n => `<li><button class="note-item ${n.id === S.ui.noteId ? 'active' : ''}" data-act="openNote" data-id="${n.id}">
-        <span class="ni-title">${n.pinned ? ICON.pin : ''}<span>${esc(n.title || 'Tanpa judul')}</span></span>
+        <span class="ni-title">${n.pinned ? ICON.pin : ''}<span>${esc(n.title || 'Tanpa judul')}</span>${noteHasImg(n) ? `<i class="ni-img">${ICON.image}</i>` : ''}</span>
         ${n.content ? `<span class="ni-snip">${esc(snippet(n.content))}</span>` : ''}
         <span class="ni-date">${timeAgo(n.updated_at)}</span></button></li>`).join('')}</ul>`
       : `<p class="empty">${q || tag ? 'Tidak ada catatan yang cocok.' : 'Belum ada catatan.'}</p>`}`;
 }
 
+const FMT = [
+  ['p', 'Teks biasa', '<b class="ft">T</b>'], ['h2', 'Judul 1', '<b class="ft">H1</b>'], ['h3', 'Judul 2', '<b class="ft">H2</b>'], ['h4', 'Judul 3', '<b class="ft">H3</b>'], '|',
+  ['bold', 'Tebal (Ctrl+B)', '<b class="ft">B</b>'], ['italic', 'Miring (Ctrl+I)', '<i class="ft serif">I</i>'], ['underline', 'Garis bawah (Ctrl+U)', '<u class="ft">U</u>'],
+  ['strikeThrough', 'Coret', '<s class="ft">S</s>'], ['mark', 'Stabilo', '<mark class="ft">A</mark>'], ['code', 'Kode', '<code class="ft">&lt;/&gt;</code>'], '|',
+  ['ul', 'Daftar poin', 'list'], ['ol', 'Daftar bernomor', 'olist'], ['check', 'Ceklis', 'checklist'],
+  ['blockquote', 'Kutipan', 'quote'], ['callout', 'Callout (kotak sorotan)', 'callout'], ['hr', 'Garis pemisah', 'divider'], '|',
+  ['link', 'Link (Ctrl+K)', 'link'], ['image', 'Gambar', 'image'],
+];
+
 function noteEditorHtml(n) {
-  const pv = S.ui.notePreview;
   return `<div class="note-editor">
     <div class="note-toolbar">
       <button class="icon-btn back" data-act="closeNote" title="Kembali ke daftar">${ICON.back}</button>
       <span class="save-status" id="saveStatus">${n.updated_at ? 'Disimpan ' + timeAgo(n.updated_at) : ''}</span>
       <span class="spacer"></span>
-      <button class="icon-btn ${pv ? 'on' : ''}" data-act="togglePreview" title="${pv ? 'Kembali menulis' : 'Pratinjau format'}">${pv ? ICON.edit : ICON.eye}</button>
       <button class="icon-btn ${n.pinned ? 'on' : ''}" data-act="togglePin" title="${n.pinned ? 'Lepas sematan' : 'Sematkan di atas'}">${ICON.pin}</button>
       <button class="icon-btn danger" data-act="deleteNote" title="Hapus catatan">${ICON.trash}</button>
     </div>
     <input id="noteTitle" class="note-title" name="title" placeholder="Judul" value="${esc(n.title || '')}" data-input="noteField" autocomplete="off" aria-label="Judul catatan">
     <input class="note-tags" name="tags" placeholder="Tag, pisahkan dengan koma — mis. kuliah, ide" value="${esc((n.tags || []).join(', '))}" data-input="noteField" autocomplete="off" aria-label="Tag">
-    ${pv
-      ? `<article class="md">${md(n.content || '') || '<p class="muted">Catatan masih kosong.</p>'}</article>`
-      : `<textarea id="noteBody" class="note-body" name="content" data-input="noteField" aria-label="Isi catatan"
-          placeholder="Mulai menulis…&#10;&#10;Format sederhana:  # Judul   **tebal**   *miring*   - daftar   - [ ] ceklis">${esc(n.content || '')}</textarea>`}
+    <div class="fmt-bar" role="toolbar" aria-label="Format teks">${FMT.map(f => f === '|' ? '<span class="fsep"></span>'
+      : `<button type="button" class="fb" data-fmt="${f[0]}" title="${f[1]}" aria-label="${f[1]}">${ICON[f[2]] || f[2]}</button>`).join('')}</div>
+    <nav class="note-outline" id="noteOutline" aria-label="Daftar isi"></nav>
+    <div id="noteDoc" class="doc" contenteditable="true" spellcheck="true" data-placeholder="Mulai menulis… ketik / untuk memilih jenis blok">${noteHtml(n)}</div>
+    <div class="note-foot"><span id="wordCount"></span><span class="muted">Ketik <kbd>/</kbd> untuk blok · <kbd>#</kbd> spasi = judul · <kbd>-</kbd> spasi = poin · <kbd>[]</kbd> spasi = ceklis · <kbd>&gt;</kbd> spasi = kutipan</span></div>
   </div>`;
 }
 
-/* autosave catatan */
+/* ---------- konversi catatan lama (markdown) → HTML editor */
+function noteHtml(n) {
+  if (n.html != null) return n.html;
+  return mdToHtml(n.content || '');
+}
+function mdToHtml(src) {
+  const out = [];
+  let list = null, code = null;
+  const open = type => { if (list !== type) { close(); out.push(type === 'ol' ? '<ol>' : type === 'cl' ? '<ul class="checklist">' : '<ul>'); list = type; } };
+  const close = () => { if (list) { out.push(list === 'ol' ? '</ol>' : '</ul>'); list = null; } };
+  const inline = s => s
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*\w])\*(?!\s)(.+?)\*(?!\w)/g, '$1<em>$2</em>')
+    .replace(/~~(.+?)~~/g, '<s>$1</s>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2">$2</a>');
+  esc(src).split('\n').forEach(raw => {
+    if (code !== null) { if (/^```/.test(raw)) { out.push(`<pre>${code.join('\n') || '<br>'}</pre>`); code = null; } else code.push(raw); return; }
+    let m;
+    if (/^```/.test(raw)) { close(); code = []; return; }
+    if ((m = raw.match(/^(#{1,3})\s+(.*)$/))) { close(); const l = m[1].length + 1; out.push(`<h${l}>${inline(m[2])}</h${l}>`); return; }
+    if (/^\s*(-{3,}|\*{3,})\s*$/.test(raw)) { close(); out.push('<hr>'); return; }
+    if ((m = raw.match(/^\s*[-*]\s+\[([ xX])\]\s?(.*)$/))) { open('cl'); out.push(`<li${m[1].trim() ? ' data-checked=""' : ''}>${inline(m[2]) || '<br>'}</li>`); return; }
+    if ((m = raw.match(/^\s*[-*]\s+(.*)$/))) { open('ul'); out.push(`<li>${inline(m[1])}</li>`); return; }
+    if ((m = raw.match(/^\s*\d+[.)]\s+(.*)$/))) { open('ol'); out.push(`<li>${inline(m[1])}</li>`); return; }
+    if ((m = raw.match(/^&gt;\s?(.*)$/))) { close(); out.push(`<blockquote>${inline(m[1])}</blockquote>`); return; }
+    if (!raw.trim()) { close(); return; }
+    close(); out.push(`<p>${inline(raw)}</p>`);
+  });
+  if (code !== null) out.push(`<pre>${code.join('\n')}</pre>`);
+  close();
+  return sanitizeHtml(out.join(''));
+}
+
+/* ---------- pembersih HTML (paste dari web, dll.) */
+const ALLOWED = {
+  P: [], H2: [], H3: [], H4: [], STRONG: [], B: [], EM: [], I: [], U: [], S: [], DEL: [], MARK: [], CODE: [], PRE: [], BLOCKQUOTE: [],
+  UL: ['class'], OL: [], LI: ['data-checked'], A: ['href'], IMG: ['src', 'data-path', 'alt'], FIGURE: ['class'], HR: [], BR: [], DIV: ['class'],
+};
+const RENAME = { H1: 'H2', H5: 'H4', H6: 'H4', STRIKE: 'S' };
+const DROP = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'META', 'LINK', 'TITLE', 'svg', 'SVG', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'NOSCRIPT']);
+const BLOCKS = new Set(['P', 'H2', 'H3', 'H4', 'UL', 'OL', 'PRE', 'BLOCKQUOTE', 'FIGURE', 'HR', 'DIV', 'TABLE']);
+function sanitizeHtml(html) {
+  const t = document.createElement('template');
+  t.innerHTML = html;
+  cleanNode(t.content);
+  return t.innerHTML.replace(/<p><\/p>/g, '');
+}
+function cleanNode(node) {
+  for (const el of [...node.childNodes]) {
+    if (el.nodeType === 3) continue;
+    if (el.nodeType !== 1) { el.remove(); continue; }
+    let tag = el.tagName;
+    if (DROP.has(tag)) { el.remove(); continue; }
+    if (RENAME[tag]) { const n = document.createElement(RENAME[tag]); while (el.firstChild) n.appendChild(el.firstChild); el.replaceWith(n); cleanNode(n.parentNode ? { childNodes: [n] } : n); continue; }
+    if (tag === 'DIV' && el.getAttribute('class') !== 'callout') {
+      const hasBlock = [...el.children].some(c => BLOCKS.has(c.tagName));
+      cleanNode(el);
+      if (hasBlock) { el.replaceWith(...el.childNodes); }
+      else { const p = document.createElement('p'); while (el.firstChild) p.appendChild(el.firstChild); el.replaceWith(p); }
+      continue;
+    }
+    if (!ALLOWED[tag]) { cleanNode(el); el.replaceWith(...el.childNodes); continue; }
+    for (const a of [...el.attributes]) if (!ALLOWED[tag].includes(a.name)) el.removeAttribute(a.name);
+    if (tag === 'UL' && el.getAttribute('class') !== 'checklist') el.removeAttribute('class');
+    if (tag === 'FIGURE') { const c = (el.getAttribute('class') || '').split(/\s+/).filter(x => /^(img|img-[sml])$/.test(x)); el.setAttribute('class', c.length ? c.join(' ') : 'img img-m'); }
+    if (tag === 'A') {
+      const h = el.getAttribute('href') || '';
+      if (/^(https?:|mailto:|tel:)/i.test(h)) { el.setAttribute('target', '_blank'); el.setAttribute('rel', 'noopener'); }
+      else el.removeAttribute('href');
+    }
+    if (tag === 'IMG') {
+      const s = el.getAttribute('src') || '';
+      if (!el.getAttribute('data-path') && !/^(https?:|data:image\/)/i.test(s)) { el.remove(); continue; }
+      if (el.parentNode && el.parentNode.tagName !== 'FIGURE') {
+        const f = document.createElement('figure'); f.className = 'img img-m'; el.replaceWith(f); f.appendChild(el);
+      }
+    }
+    cleanNode(el);
+  }
+}
+
+/* ---------- editor */
+let docTimer = null, savedRange = null, slash = null;
+function docEl() { return $('#noteDoc'); }
+function mountNoteEditor() {
+  const doc = docEl(); if (!doc) return;
+  try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch (e) {}
+  if (!doc.innerHTML.trim()) doc.innerHTML = '<p><br></p>';
+  doc.addEventListener('input', onDocInput);
+  doc.addEventListener('keydown', onDocKeydown);
+  doc.addEventListener('paste', onDocPaste);
+  doc.addEventListener('drop', onDocDrop);
+  doc.addEventListener('click', onDocClick);
+  resolveImages(doc);
+  updateOutline(); updateWordCount();
+}
+function noteDocChanged() {
+  clearTimeout(docTimer);
+  docTimer = setTimeout(() => {
+    const doc = docEl(); if (!doc || !S.ui.noteId) return;
+    queueNoteSave(S.ui.noteId, { html: serializeDoc(doc), content: doc.innerText.replace(/\n{3,}/g, '\n\n').trim() });
+    updateOutline(); updateWordCount();
+  }, 350);
+}
+function serializeDoc(doc) {
+  const c = doc.cloneNode(true);
+  c.querySelectorAll('figure.uploading').forEach(f => f.remove());
+  c.querySelectorAll('img[data-path]').forEach(i => i.removeAttribute('src'));
+  return sanitizeHtml(c.innerHTML);
+}
+function updateWordCount() {
+  const doc = docEl(), el = $('#wordCount'); if (!doc || !el) return;
+  const w = (doc.innerText.match(/\S+/g) || []).length;
+  el.textContent = `${w} kata`;
+}
+function updateOutline() {
+  const doc = docEl(), nav = $('#noteOutline'); if (!doc || !nav) return;
+  const hs = [...doc.querySelectorAll('h2, h3, h4')].filter(h => h.textContent.trim());
+  nav.innerHTML = hs.length >= 2 ? `<span class="muted">Daftar isi</span>${hs.map((h, i) =>
+    `<button type="button" class="ol-${h.tagName.toLowerCase()}" data-act="jumpHeading" data-i="${i}">${esc(h.textContent.trim().slice(0, 40))}</button>`).join('')}` : '';
+}
+
+const sel = () => document.getSelection();
+function topBlock(node) {
+  const doc = docEl();
+  while (node && node.parentNode !== doc) node = node.parentNode;
+  return node && node.parentNode === doc ? node : null;
+}
+function currentBlock() {
+  const s = sel(); if (!s.rangeCount) return null;
+  let n = s.anchorNode, doc = docEl();
+  if (!doc || !doc.contains(n)) return null;
+  while (n && n !== doc) {
+    if (n.nodeType === 1 && /^(P|H2|H3|H4|LI|PRE|BLOCKQUOTE|FIGURE)$/.test(n.tagName)) return n;
+    n = n.parentNode;
+  }
+  return null;
+}
+function inside(tag, cls) {
+  const s = sel(); if (!s.rangeCount) return null;
+  let n = s.anchorNode, doc = docEl();
+  while (n && n !== doc) { if (n.nodeType === 1 && n.tagName === tag && (!cls || n.classList.contains(cls))) return n; n = n.parentNode; }
+  return null;
+}
+function caretTo(el, atEnd = true) {
+  const r = document.createRange(); r.selectNodeContents(el); r.collapse(!atEnd);
+  const s = sel(); s.removeAllRanges(); s.addRange(r);
+}
+function ensureFocus() {
+  const doc = docEl(); if (!doc) return false;
+  if (!doc.contains(sel().anchorNode)) { doc.focus(); if (savedRange) { sel().removeAllRanges(); sel().addRange(savedRange); } else caretTo(doc.lastElementChild || doc); }
+  return true;
+}
+const exec = (c, v = null) => document.execCommand(c, false, v);
+
+function applyFmt(name) {
+  if (!ensureFocus()) return;
+  const doc = docEl();
+  const cur = currentBlock();
+  switch (name) {
+    case 'p': case 'h2': case 'h3': case 'h4': case 'pre': case 'blockquote': {
+      if (inside('UL', 'checklist') || inside('UL') || inside('OL')) exec(inside('OL') ? 'insertOrderedList' : 'insertUnorderedList');
+      const now = currentBlock();
+      const same = now && now.tagName.toLowerCase() === name;
+      exec('formatBlock', same && name !== 'p' ? '<p>' : `<${name}>`);
+      break;
+    }
+    case 'bold': case 'italic': case 'underline': case 'strikeThrough': exec(name); break;
+    case 'mark': toggleInline('MARK'); break;
+    case 'code': toggleInline('CODE'); break;
+    case 'ul': {
+      const cl = inside('UL', 'checklist');
+      if (cl) { cl.classList.remove('checklist'); cl.querySelectorAll('li').forEach(li => li.removeAttribute('data-checked')); } else exec('insertUnorderedList');
+      break;
+    }
+    case 'ol': exec('insertOrderedList'); break;
+    case 'check': {
+      const ul = inside('UL');
+      if (ul && ul.classList.contains('checklist')) exec('insertUnorderedList');
+      else if (ul) ul.classList.add('checklist');
+      else { exec('insertUnorderedList'); const u = inside('UL'); if (u) u.classList.add('checklist'); }
+      break;
+    }
+    case 'callout': {
+      const c = inside('DIV', 'callout');
+      if (c) { c.replaceWith(...c.childNodes); break; }
+      const b = topBlock(sel().anchorNode) || cur;
+      const box = document.createElement('div'); box.className = 'callout';
+      if (b && b !== doc) { b.replaceWith(box); box.appendChild(b.tagName === 'P' || /^H|UL|OL|PRE/.test(b.tagName) ? b : Object.assign(document.createElement('p'), { innerHTML: b.innerHTML })); }
+      else { box.innerHTML = '<p><br></p>'; doc.appendChild(box); }
+      caretTo(box.lastElementChild || box);
+      break;
+    }
+    case 'hr': {
+      const b = topBlock(sel().anchorNode);
+      const hr = document.createElement('hr'), p = document.createElement('p'); p.innerHTML = '<br>';
+      if (b && b.tagName === 'P' && !b.textContent.trim() && !b.querySelector('img')) { b.replaceWith(hr); hr.after(p); }
+      else if (b) { b.after(hr); hr.after(p); } else { doc.append(hr, p); }
+      caretTo(p, false);
+      break;
+    }
+    case 'link': addLink(); return;
+    case 'image': savedRange = sel().rangeCount ? sel().getRangeAt(0).cloneRange() : null; openModal(imageModalHtml()); return;
+  }
+  noteDocChanged();
+}
+function toggleInline(tag) {
+  const s = sel(); if (!s.rangeCount) return;
+  const own = inside(tag);
+  if (own) { own.replaceWith(...own.childNodes); return; }
+  const r = s.getRangeAt(0);
+  if (r.collapsed) return toast('Blok dulu teks yang mau diberi format');
+  const el = document.createElement(tag);
+  el.appendChild(r.extractContents()); r.insertNode(el);
+  s.removeAllRanges(); const nr = document.createRange(); nr.selectNodeContents(el); s.addRange(nr);
+}
+function normUrl(u) { u = String(u || '').trim(); if (!u) return ''; return /^(https?:|mailto:|tel:)/i.test(u) ? u : 'https://' + u; }
+function addLink() {
+  const s = sel(); const r = s.rangeCount ? s.getRangeAt(0).cloneRange() : null;
+  const existing = inside('A');
+  const url = normUrl(prompt('Tempel link (mis. https://...)', existing ? existing.getAttribute('href') : ''));
+  ensureFocus(); if (r) { s.removeAllRanges(); s.addRange(r); }
+  if (!url) return;
+  if (existing) existing.setAttribute('href', url);
+  else if (!r || r.collapsed) exec('insertHTML', `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>&nbsp;`);
+  else exec('createLink', url);
+  noteDocChanged();
+}
+
+/* slash menu */
+const SLASH = [
+  ['p', 'Teks', 'paragraf text biasa'], ['h2', 'Judul 1', 'heading h1 judul besar'], ['h3', 'Judul 2', 'heading h2 subjudul'], ['h4', 'Judul 3', 'heading h3'],
+  ['ul', 'Daftar poin', 'bullet list poin'], ['ol', 'Daftar bernomor', 'number list angka'], ['check', 'Ceklis / to-do', 'checklist todo centang'],
+  ['blockquote', 'Kutipan', 'quote kutip'], ['callout', 'Callout', 'kotak sorotan info penting'], ['hr', 'Garis pemisah', 'divider garis section bagian'],
+  ['pre', 'Blok kode', 'code kode'], ['image', 'Gambar', 'image foto upload link'], ['link', 'Link', 'tautan url'],
+];
+function slashMenuEl() {
+  let m = $('#slashMenu');
+  if (!m) { m = document.createElement('div'); m.id = 'slashMenu'; m.className = 'slash-menu'; document.body.appendChild(m); }
+  return m;
+}
+function closeSlash() { slash = null; const m = $('#slashMenu'); if (m) m.hidden = true; }
+function updateSlash() {
+  const b = currentBlock();
+  const txt = b ? b.textContent : '';
+  if (!b || !/^\/[\w ]{0,18}$/i.test(txt) || b.tagName === 'PRE') return closeSlash();
+  const q = txt.slice(1).toLowerCase().trim();
+  const items = SLASH.filter(([, l, k]) => !q || l.toLowerCase().includes(q) || k.includes(q));
+  if (!items.length) return closeSlash();
+  slash = { block: b, items, i: slash && slash.block === b ? Math.min(slash.i, items.length - 1) : 0 };
+  const m = slashMenuEl();
+  m.innerHTML = items.map(([k, l], i) => `<button type="button" class="${i === slash.i ? 'on' : ''}" data-slash="${k}">${ICON[{ p: 'note', h2: 'heading', h3: 'heading', h4: 'heading', ul: 'list', ol: 'olist', check: 'checklist', blockquote: 'quote', callout: 'callout', hr: 'divider', pre: 'codeblock', image: 'image', link: 'link' }[k]] || ''}<span>${l}</span></button>`).join('');
+  const rect = (sel().rangeCount && sel().getRangeAt(0).getBoundingClientRect()) || b.getBoundingClientRect();
+  const r = rect.height ? rect : b.getBoundingClientRect();
+  m.hidden = false;
+  const top = r.bottom + 6 + 260 > innerHeight ? Math.max(8, r.top - 6 - Math.min(260, m.scrollHeight)) : r.bottom + 6;
+  m.style.top = top + 'px'; m.style.left = Math.min(Math.max(8, r.left), innerWidth - 240) + 'px';
+}
+function pickSlash(k) {
+  if (!slash) return;
+  const b = slash.block; closeSlash();
+  b.innerHTML = '<br>'; caretTo(b, false);
+  applyFmt(k);
+}
+
+/* markdown shortcuts saat mengetik */
+const SHORTCUTS = [[/^#\s$/, 'h2'], [/^##\s$/, 'h3'], [/^###\s$/, 'h4'], [/^[-*]\s$/, 'ul'], [/^1[.)]\s$/, 'ol'], [/^\[\s?\]\s$/, 'check'], [/^>\s$/, 'blockquote'], [/^```$/, 'pre']];
+function onDocInput(e) {
+  const b = currentBlock();
+  if (b && e.inputType === 'insertText' && b.tagName === 'P') {
+    const txt = b.textContent.replace(/ /g, ' ');
+    if (txt === '---') { b.innerHTML = '<br>'; caretTo(b, false); applyFmt('hr'); b.remove(); return; }
+    for (const [re, k] of SHORTCUTS) if (re.test(txt)) { b.innerHTML = '<br>'; caretTo(b, false); applyFmt(k); return; }
+  }
+  if (e.inputType === 'insertParagraph') { const li = inside('LI'); if (li && !li.textContent.trim()) li.removeAttribute('data-checked'); }
+  updateSlash();
+  noteDocChanged();
+}
+function onDocKeydown(e) {
+  if (slash) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); slash.i = (slash.i + (e.key === 'ArrowDown' ? 1 : -1) + slash.items.length) % slash.items.length; updateSlash(); return; }
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pickSlash(slash.items[slash.i][0]); return; }
+    if (e.key === 'Escape') { e.preventDefault(); closeSlash(); return; }
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); addLink(); return; }
+  if (e.key === 'Tab' && inside('LI')) { e.preventDefault(); exec(e.shiftKey ? 'outdent' : 'indent'); noteDocChanged(); return; }
+  if (e.key === 'Enter' && !e.shiftKey) {
+    const b = currentBlock();
+    const callout = inside('DIV', 'callout');
+    /* Enter di baris kosong dalam callout → keluar dari callout */
+    if (b && callout && b !== callout && !b.textContent.trim() && !b.querySelector('img')) {
+      e.preventDefault();
+      const p = document.createElement('p'); p.innerHTML = '<br>';
+      b.remove();
+      if (!callout.textContent.trim() && !callout.querySelector('img')) callout.replaceWith(p); else callout.after(p);
+      caretTo(p, false); noteDocChanged(); return;
+    }
+    /* Enter di akhir judul / kutipan → paragraf biasa di bawahnya */
+    if (b && /^(H2|H3|H4|BLOCKQUOTE)$/.test(b.tagName)) {
+      const r = sel().getRangeAt(0);
+      const tail = document.createRange(); tail.setStart(r.endContainer, r.endOffset); tail.setEnd(b, b.childNodes.length);
+      if (!tail.toString().length) {
+        e.preventDefault();
+        const p = document.createElement('p'); p.innerHTML = '<br>';
+        if (b.tagName === 'BLOCKQUOTE' && !b.textContent.trim()) b.replaceWith(p); else b.after(p);
+        caretTo(p, false); noteDocChanged(); return;
+      }
+    }
+  }
+  if (e.key === 'Backspace') {
+    const b = currentBlock();
+    if (b && /^(H2|H3|H4|BLOCKQUOTE|PRE)$/.test(b.tagName)) {
+      const r = sel().getRangeAt(0); const head = document.createRange(); head.setStart(b, 0); head.setEnd(r.startContainer, r.startOffset);
+      if (r.collapsed && !head.toString().length) { e.preventDefault(); exec('formatBlock', '<p>'); noteDocChanged(); }
+    }
+  }
+}
+function onDocClick(e) {
+  const li = e.target.closest('ul.checklist > li');
+  if (li && e.clientX - li.getBoundingClientRect().left < 30) {
+    e.preventDefault();
+    li.hasAttribute('data-checked') ? li.removeAttribute('data-checked') : li.setAttribute('data-checked', '');
+    noteDocChanged(); return;
+  }
+  const img = e.target.closest('figure.img');
+  if (img) { selectFigure(img); return; }
+  const a = e.target.closest('a[href]');
+  if (a) { showBubble(a, `<button type="button" data-bub="open">Buka ↗</button><button type="button" data-bub="edit">Ubah</button><button type="button" data-bub="unlink">Lepas</button>`, { a }); return; }
+  hideBubble();
+}
+async function onDocPaste(e) {
+  const files = [...(e.clipboardData && e.clipboardData.files || [])].filter(f => f.type.startsWith('image/'));
+  if (files.length) { e.preventDefault(); savedRange = sel().rangeCount ? sel().getRangeAt(0).cloneRange() : null; for (const f of files) await insertImageFile(f); return; }
+  const html = e.clipboardData && e.clipboardData.getData('text/html');
+  const text = e.clipboardData && e.clipboardData.getData('text/plain');
+  if (inside('PRE')) { e.preventDefault(); exec('insertText', text || ''); return; }
+  if (html) { e.preventDefault(); exec('insertHTML', sanitizeHtml(html)); noteDocChanged(); return; }
+  if (text && /^https?:\/\/\S+\.(png|jpe?g|gif|webp)(\?\S*)?$/i.test(text.trim())) { e.preventDefault(); savedRange = sel().getRangeAt(0).cloneRange(); insertFigure({ src: text.trim() }); return; }
+  if (text && /^https?:\/\/\S+$/.test(text.trim())) { e.preventDefault(); exec('insertHTML', `<a href="${esc(text.trim())}" target="_blank" rel="noopener">${esc(text.trim())}</a>&nbsp;`); noteDocChanged(); }
+}
+async function onDocDrop(e) {
+  const files = [...(e.dataTransfer && e.dataTransfer.files || [])].filter(f => f.type.startsWith('image/'));
+  if (!files.length) return;
+  e.preventDefault();
+  const r = document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
+  savedRange = r;
+  for (const f of files) await insertImageFile(f);
+}
+
+/* gelembung untuk link & gambar */
+let bubbleCtx = null;
+function bubbleEl() { let b = $('#docBubble'); if (!b) { b = document.createElement('div'); b.id = 'docBubble'; b.className = 'doc-bubble'; document.body.appendChild(b); } return b; }
+function showBubble(target, html, ctx) {
+  const b = bubbleEl(); b.innerHTML = html; b.hidden = false; bubbleCtx = ctx;
+  const r = target.getBoundingClientRect();
+  b.style.top = Math.max(8, r.top - b.offsetHeight - 8) + 'px';
+  b.style.left = Math.min(Math.max(8, r.left + r.width / 2 - b.offsetWidth / 2), innerWidth - b.offsetWidth - 8) + 'px';
+}
+function hideBubble() { const b = $('#docBubble'); if (b) b.hidden = true; bubbleCtx = null; $$('#noteDoc figure.sel').forEach(f => f.classList.remove('sel')); }
+function selectFigure(fig) {
+  $$('#noteDoc figure.sel').forEach(f => f !== fig && f.classList.remove('sel'));
+  fig.classList.add('sel');
+  const size = ['img-s', 'img-m', 'img-l'].find(c => fig.classList.contains(c)) || 'img-m';
+  showBubble(fig, `${[['img-s', 'Kecil'], ['img-m', 'Sedang'], ['img-l', 'Penuh']].map(([c, l]) => `<button type="button" class="${c === size ? 'on' : ''}" data-bub="${c}">${l}</button>`).join('')}<button type="button" data-bub="del" class="danger">Hapus</button>`, { fig });
+}
+document.addEventListener('mousedown', e => { if (e.target.closest('.fb, #docBubble, #slashMenu')) e.preventDefault(); });
+document.addEventListener('click', e => {
+  const f = e.target.closest('[data-fmt]'); if (f) { e.preventDefault(); closeSlash(); applyFmt(f.dataset.fmt); return; }
+  const s = e.target.closest('[data-slash]'); if (s) { e.preventDefault(); pickSlash(s.dataset.slash); return; }
+  const bb = e.target.closest('[data-bub]');
+  if (bb && bubbleCtx) {
+    e.preventDefault();
+    const k = bb.dataset.bub, { a, fig } = bubbleCtx;
+    if (k === 'open' && a) window.open(a.href, '_blank', 'noopener');
+    if (k === 'unlink' && a) { a.replaceWith(...a.childNodes); noteDocChanged(); }
+    if (k === 'edit' && a) { const u = normUrl(prompt('Ubah link:', a.getAttribute('href'))); if (u) { a.setAttribute('href', u); noteDocChanged(); } }
+    if (fig && /^img-/.test(k)) { fig.classList.remove('img-s', 'img-m', 'img-l'); fig.classList.add(k); noteDocChanged(); selectFigure(fig); return; }
+    if (fig && k === 'del') { fig.remove(); noteDocChanged(); }
+    hideBubble(); return;
+  }
+  if (!e.target.closest('#noteDoc, #docBubble')) hideBubble();
+  if (!e.target.closest('#slashMenu, #noteDoc')) closeSlash();
+});
+window.addEventListener('scroll', () => { hideBubble(); closeSlash(); }, true);
+
+/* ---------- gambar */
+function imageModalHtml() {
+  return `<div class="modal-body">
+    <h2>Tambah gambar</h2>
+    <label class="dropzone">${ICON.upload}<b>Pilih foto / gambar dari perangkat</b><span class="muted small">JPG, PNG, WebP, GIF · otomatis dikecilkan</span>
+      <input type="file" accept="image/*" multiple data-change="imgFile" hidden></label>
+    <p class="muted small center">atau tempel link gambar dari internet</p>
+    <form class="inline-form" data-form="imgUrl"><input name="url" placeholder="https://…/gambar.jpg" autocomplete="off" inputmode="url"><button class="btn">Sisipkan</button></form>
+    <p class="muted small">Tips: gambar juga bisa langsung di-<b>paste</b> (Ctrl+V) atau diseret ke dalam catatan.</p>
+    <div class="modal-actions"><button type="button" class="btn ghost" data-act="closeModal">Tutup</button></div>
+  </div>`;
+}
+function insertFigure({ src, path, uploading }) {
+  const doc = docEl(); if (!doc) return null;
+  const fig = document.createElement('figure'); fig.className = 'img img-m' + (uploading ? ' uploading' : '');
+  const img = document.createElement('img'); img.alt = '';
+  if (src) img.src = src; if (path) img.dataset.path = path;
+  fig.appendChild(img);
+  let b = savedRange && doc.contains(savedRange.startContainer) ? topBlock(savedRange.startContainer) : null;
+  const p = document.createElement('p'); p.innerHTML = '<br>';
+  if (b && b.tagName === 'P' && !b.textContent.trim() && !b.querySelector('img')) { b.replaceWith(fig); fig.after(p); }
+  else if (b) { b.after(fig); fig.after(p); }
+  else { doc.append(fig, p); }
+  savedRange = document.createRange(); savedRange.selectNodeContents(p); savedRange.collapse(true);
+  try { doc.focus({ preventScroll: true }); sel().removeAllRanges(); sel().addRange(savedRange.cloneRange()); } catch (e) {}
+  if (!uploading) noteDocChanged();
+  return fig;
+}
+async function compressImage(file, max = 1600, q = 0.82) {
+  if (file.type === 'image/gif' && file.size < 4e6) return file;
+  let src;
+  try { src = await createImageBitmap(file); }
+  catch (e) { src = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = URL.createObjectURL(file); }); }
+  const w = src.width, h = src.height, k = Math.min(1, max / Math.max(w, h));
+  const c = document.createElement('canvas'); c.width = Math.round(w * k); c.height = Math.round(h * k);
+  c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+  const blob = await new Promise(r => c.toBlob(r, 'image/webp', q));
+  if (blob && blob.type === 'image/webp') return blob;
+  return new Promise(r => c.toBlob(r, 'image/jpeg', q));
+}
+const blobToDataUrl = b => new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); });
+async function insertImageFile(file) {
+  closeModal();
+  if (file.size > 25e6) return toast('Gambar terlalu besar (maks 25 MB)', 'error');
+  const preview = URL.createObjectURL(file);
+  const fig = insertFigure({ src: preview, uploading: true });
+  if (!fig) return;
+  try {
+    if (cloud.active) {
+      const blob = await compressImage(file);
+      const path = await cloud.upload(blob);
+      const img = fig.querySelector('img'); img.dataset.path = path;
+      imgCacheSet(path, null);
+    } else {
+      const blob = await compressImage(file, 1200, 0.75);
+      fig.querySelector('img').src = await blobToDataUrl(blob);
+    }
+    fig.classList.remove('uploading');
+    noteDocChanged();
+  } catch (e) {
+    fig.remove(); noteDocChanged();
+    toast(e.message || 'Gagal mengunggah gambar', 'error');
+  }
+}
+/* URL gambar privat (signed URL) di-cache supaya tidak minta ulang terus */
+const IMG_KEY = 'rp-imgurls';
+const imgCache = lsGet(IMG_KEY, {});
+function imgCacheSet(path, url, exp) { if (url) imgCache[path] = { url, exp }; lsSet(IMG_KEY, imgCache); }
+async function resolveImages(root) {
+  const imgs = [...root.querySelectorAll('img[data-path]')].filter(i => !i.getAttribute('src') || i.src.startsWith('blob:') === false);
+  if (!imgs.length || !cloud.active) return;
+  const now = Date.now() / 1000;
+  const need = [];
+  imgs.forEach(i => { const c = imgCache[i.dataset.path]; if (c && c.exp - 86400 > now) i.src = c.url; else need.push(i.dataset.path); });
+  if (!need.length) return;
+  try {
+    const res = await cloud.signUrls(uniq(need));
+    res.forEach(x => { if (x.signedURL || x.signedUrl) imgCacheSet(x.path, cloud.fullSignedUrl(x.signedURL || x.signedUrl), now + 6.5 * 86400); });
+    imgs.forEach(i => { const c = imgCache[i.dataset.path]; if (c) i.src = c.url; else i.closest('figure') && i.closest('figure').classList.add('missing'); });
+  } catch (e) {
+    imgs.forEach(i => { if (!i.getAttribute('src')) i.closest('figure') && i.closest('figure').classList.add('missing'); });
+  }
+}
+
+/* ---------- autosave catatan */
 const noteSave = { timer: null, pending: null };
 function setSaveStatus(txt) { const el = $('#saveStatus'); if (el) el.textContent = txt; }
 function refreshNoteList() { const el = $('#noteList'); if (el) el.innerHTML = noteListHtml(); }
@@ -730,6 +1392,11 @@ function queueNoteSave(id, fields) {
 
 async function flushNote() {
   clearTimeout(noteSave.timer);
+  if (docTimer && docEl() && S.ui.noteId) {
+    clearTimeout(docTimer); docTimer = null;
+    const doc = docEl(), n = find('notes', S.ui.noteId);
+    if (n) { const html = serializeDoc(doc); if (html !== n.html) queueNoteSave(n.id, { html, content: doc.innerText.trim() }); clearTimeout(noteSave.timer); }
+  }
   const p = noteSave.pending;
   if (!p) return;
   noteSave.pending = null;
@@ -749,51 +1416,13 @@ async function flushNote() {
 
 /* catatan kosong yang ditinggalkan dihapus otomatis */
 async function leaveNote() {
+  closeSlash(); hideBubble();
   await flushNote();
   const n = S.ui.noteId && find('notes', S.ui.noteId);
-  if (n && !(n.title || '').trim() && !(n.content || '').trim() && !(n.tags || []).length) {
+  if (n && !(n.title || '').trim() && !(n.content || '').trim() && !(n.tags || []).length && !noteHasImg(n)) {
     try { await del('notes', n.id); } catch (e) {}
     S.ui.noteId = null;
   }
-}
-
-/* markdown mini (aman: teks di-escape dulu) */
-function md(src) {
-  const out = [];
-  let list = null, code = null;
-  const open = type => { if (list !== type) { close(); out.push(type === 'ol' ? '<ol>' : type === 'cl' ? '<ul class="checklist">' : '<ul>'); list = type; } };
-  const close = () => { if (list) { out.push(list === 'ol' ? '</ol>' : '</ul>'); list = null; } };
-  const inline = s => s
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/(^|[^*\w])\*(?!\s)(.+?)\*(?!\w)/g, '$1<em>$2</em>')
-    .replace(/~~(.+?)~~/g, '<del>$1</del>')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-    .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
-
-  esc(src).split('\n').forEach((raw, i) => {
-    if (code !== null) {
-      if (/^```/.test(raw)) { out.push(`<pre><code>${code.join('\n')}</code></pre>`); code = null; } else code.push(raw);
-      return;
-    }
-    let m;
-    if (/^```/.test(raw)) { close(); code = []; return; }
-    if ((m = raw.match(/^(#{1,3})\s+(.*)$/))) { close(); const l = m[1].length + 1; out.push(`<h${l}>${inline(m[2])}</h${l}>`); return; }
-    if (/^\s*(-{3,}|\*{3,})\s*$/.test(raw)) { close(); out.push('<hr>'); return; }
-    if ((m = raw.match(/^\s*[-*]\s+\[([ xX])\]\s?(.*)$/))) {
-      open('cl'); const on = m[1].trim() !== '';
-      out.push(`<li class="${on ? 'checked' : ''}" data-act="toggleCheck" data-line="${i}"><span class="box">${on ? ICON.check : ''}</span><span>${inline(m[2])}</span></li>`);
-      return;
-    }
-    if ((m = raw.match(/^\s*[-*]\s+(.*)$/))) { open('ul'); out.push(`<li>${inline(m[1])}</li>`); return; }
-    if ((m = raw.match(/^\s*\d+[.)]\s+(.*)$/))) { open('ol'); out.push(`<li>${inline(m[1])}</li>`); return; }
-    if ((m = raw.match(/^&gt;\s?(.*)$/))) { close(); out.push(`<blockquote>${inline(m[1])}</blockquote>`); return; }
-    if (!raw.trim()) { close(); return; }
-    close(); out.push(`<p>${inline(raw)}</p>`);
-  });
-  if (code !== null) out.push(`<pre><code>${code.join('\n')}</code></pre>`);
-  close();
-  return out.join('');
 }
 
 /* ================================================================ KEUANGAN */
@@ -878,7 +1507,7 @@ function renderMoney() {
   </div>`;
 }
 
-/* ================================================================ KEBIASAAN */
+/* ================================================================ KEBIASAAN (tampilan bulanan + riwayat) */
 function streak(h) {
   const set = new Set(h.done || []);
   let d = ymd();
@@ -887,22 +1516,53 @@ function streak(h) {
   while (set.has(d)) { n++; d = addDays(d, -1); }
   return n;
 }
-function rate30(h) {
-  const t = ymd();
-  const age = Math.floor((Date.now() / 1000 - (h.created_at || 0)) / 86400) + 1;
-  const span = Math.max(1, Math.min(30, age));
-  const from = addDays(t, -(span - 1));
-  const n = (h.done || []).filter(d => d >= from && d <= t).length;
-  return Math.round(n / span * 100);
+function bestStreak(h) {
+  const ds = [...new Set(h.done || [])].sort();
+  let best = 0, cur = 0, prev = null;
+  for (const d of ds) { cur = prev && addDays(prev, 1) === d ? cur + 1 : 1; best = Math.max(best, cur); prev = d; }
+  return best;
+}
+/* hitung hari yang "berlaku" di bulan m: sejak kebiasaan dibuat s/d hari ini */
+function monthStat(h, m) {
+  const t = ymd(), [y, mo] = m.split('-').map(Number), days = new Date(y, mo, 0).getDate();
+  const first = `${m}-01`, last = `${m}-${pad(days)}`;
+  const created = h.created_at ? ymd(new Date(h.created_at * 1000)) : first;
+  const doneIn = (h.done || []).filter(d => d.startsWith(m));
+  const firstDone = doneIn.length ? doneIn.slice().sort()[0] : null;
+  let from = created > first ? created : first;
+  if (firstDone && firstDone < from) from = firstDone;
+  const to = last < t ? last : t;
+  const span = from > to ? 0 : daysBetween(from, to) + 1;
+  return { done: doneIn.length, span, pct: span ? Math.round(doneIn.length / span * 100) : null };
 }
 
 function renderHabits() {
-  const t = ymd();
-  const days = [...Array(7)].map((_, i) => addDays(t, i - 6));
+  const m = S.ui.hMonth, t = ymd(), prev = shiftMonth(m, -1);
+  const isNow = m === monthKey(new Date());
+  const [y, mo] = m.split('-').map(Number);
+  const days = new Date(y, mo, 0).getDate(), startDow = (new Date(y, mo - 1, 1).getDay() + 6) % 7;
+  const stats = S.habits.map(h => monthStat(h, m)).filter(s => s.pct != null);
+  const avg = stats.length ? Math.round(stats.reduce((a, s) => a + s.pct, 0) / stats.length) : null;
+  const pstats = S.habits.map(h => monthStat(h, prev)).filter(s => s.pct != null);
+  const pavg = pstats.length ? Math.round(pstats.reduce((a, s) => a + s.pct, 0) / pstats.length) : null;
   const doneToday = S.habits.filter(h => (h.done || []).includes(t)).length;
+
   return `
-  <header class="page-head"><div><p class="eyebrow">Kebiasaan</p><h1>Sedikit demi sedikit</h1></div>
-    ${S.habits.length ? `<p class="muted">Hari ini: <b>${doneToday}</b> dari ${S.habits.length} selesai</p>` : ''}</header>
+  <header class="page-head">
+    <div><p class="eyebrow">Kebiasaan</p><h1>Sedikit demi sedikit</h1></div>
+    <div class="month-nav">
+      <button class="icon-btn" data-act="hMonth" data-n="-1" title="Bulan sebelumnya">${ICON.left}</button>
+      <b>${monthLabel(m)}</b>
+      <button class="icon-btn" data-act="hMonth" data-n="1" title="Bulan berikutnya" ${isNow ? 'disabled' : ''}>${ICON.right}</button>
+      ${isNow ? '' : `<button class="btn ghost sm" data-act="hMonth" data-n="0">Bulan ini</button>`}
+    </div>
+  </header>
+
+  ${S.habits.length ? `<div class="stats three">
+    ${stat(isNow ? 'Hari ini' : 'Kebiasaan', isNow ? `${doneToday}/${S.habits.length}` : S.habits.length, isNow ? (doneToday === S.habits.length ? 'semua beres 👏' : 'ayo lanjutkan') : 'yang dilacak')}
+    ${stat(`Konsistensi ${monthLabel(m).split(' ')[0]}`, avg == null ? '—' : avg + '%', 'rata-rata semua kebiasaan', avg != null && avg >= 70 ? 'good' : '')}
+    ${stat(`Dibanding ${monthLabel(prev).split(' ')[0]}`, avg == null || pavg == null ? '—' : `${avg - pavg >= 0 ? '+' : '−'}${Math.abs(avg - pavg)}%`, pavg == null ? 'belum ada data' : `bulan lalu ${pavg}%`, avg != null && pavg != null ? (avg >= pavg ? 'good' : 'warn') : '')}
+  </div>` : ''}
 
   <form class="card add-habit" data-form="addHabit">
     <input name="emoji" class="emoji-in" maxlength="4" placeholder="🌱" aria-label="Emoji (opsional)" autocomplete="off">
@@ -910,22 +1570,361 @@ function renderHabits() {
     <button class="btn primary">${ICON.plus} Tambah</button>
   </form>
 
-  <section class="card">
-    ${S.habits.length ? `<div class="table-wrap"><table class="habit-table">
-      <thead><tr><th class="hname">Kebiasaan</th>
-        ${days.map(d => `<th class="dh ${d === t ? 'today' : ''}">${parseYmd(d).toLocaleDateString('id-ID', { weekday: 'short' })}<small>${parseYmd(d).getDate()}</small></th>`).join('')}
-        <th>Beruntun</th><th>30 hari</th><th></th></tr></thead>
-      <tbody>${S.habits.map(h => {
-        const set = new Set(h.done || []);
-        return `<tr><td class="hname">${h.emoji ? `<span class="em">${esc(h.emoji)}</span>` : ''}${esc(h.name)}</td>
-          ${days.map(d => `<td><button class="day ${set.has(d) ? 'on' : ''} ${d === t ? 'is-today' : ''}" data-act="toggleHabit" data-id="${h.id}" data-date="${d}" aria-label="${esc(h.name)} ${d}">${set.has(d) ? ICON.check : ''}</button></td>`).join('')}
-          <td class="num">${streak(h)}<small> hari</small></td>
-          <td class="num">${rate30(h)}%</td>
-          <td class="acts"><button class="icon-btn" data-act="editHabit" data-id="${h.id}" title="Ganti nama">${ICON.edit}</button><button class="icon-btn danger" data-act="deleteHabit" data-id="${h.id}" title="Hapus">${ICON.trash}</button></td></tr>`;
-      }).join('')}</tbody></table></div>`
-      : `<p class="empty">Belum ada kebiasaan. Mulai dari satu yang kecil saja.</p>`}
+  ${S.habits.length ? `<div class="habit-grid">${S.habits.map(h => {
+    const set = new Set(h.done || []), st = monthStat(h, m), pst = monthStat(h, prev);
+    const created = h.created_at ? ymd(new Date(h.created_at * 1000)) : '0000';
+    let cells = '';
+    for (let i = 0; i < startDow; i++) cells += '<span></span>';
+    for (let d = 1; d <= days; d++) {
+      const ds = `${m}-${pad(d)}`, on = set.has(ds), fut = ds > t;
+      cells += `<button class="hday ${on ? 'on' : ''} ${ds === t ? 'today' : ''} ${ds < created && !on ? 'pre' : ''}" ${fut ? 'disabled' : ''} data-act="toggleHabit" data-id="${h.id}" data-date="${ds}" title="${fmtFull(ds)}" aria-pressed="${on}">${d}</button>`;
+    }
+    const delta = st.pct != null && pst.pct != null ? st.pct - pst.pct : null;
+    return `<section class="card habit-card">
+      <div class="hc-head">
+        ${h.emoji ? `<span class="em">${esc(h.emoji)}</span>` : ''}<b>${esc(h.name)}</b><span class="spacer"></span>
+        <button class="icon-btn" data-act="editHabit" data-id="${h.id}" title="Ganti nama">${ICON.edit}</button>
+        <button class="icon-btn danger" data-act="deleteHabit" data-id="${h.id}" title="Hapus">${ICON.trash}</button>
+      </div>
+      <div class="hc-stats">
+        <span><b>${st.done}</b>${st.span ? '/' + st.span : ''} hari</span>
+        <span class="bar"><i style="width:${st.pct || 0}%"></i></span>
+        <span><b>${st.pct == null ? '—' : st.pct + '%'}</b>${delta == null ? '' : ` <small class="${delta >= 0 ? 'up' : 'down'}">${delta >= 0 ? '▲' : '▼'} ${Math.abs(delta)}%</small>`}</span>
+      </div>
+      <div class="hcal">${['S', 'S', 'R', 'K', 'J', 'S', 'M'].map(x => `<span class="hh">${x}</span>`).join('')}${cells}</div>
+      <div class="hc-foot muted small"><span>🔥 ${streak(h)} hari beruntun</span><span>Rekor ${bestStreak(h)} hari</span><span>Total ${(h.done || []).length}×</span></div>
+    </section>`;
+  }).join('')}</div>`
+    : `<section class="card"><p class="empty">Belum ada kebiasaan. Mulai dari satu yang kecil saja.</p></section>`}`;
+}
+
+/* ================================================================ KULIAH (rencana studi) */
+/* Sumber: Pedoman Pelaksanaan Kurikulum PSSI FILKOM UB 2024–2027 (Jalur A, reguler).
+   Format wajib: [semester, kode, nama, sks, praktikum, prasyarat]. Semester 4.5 = semester antara. */
+const KURIKULUM_SI_2024 = {
+  label: 'S1 Sistem Informasi FILKOM UB · Kurikulum 2024',
+  total: 145, wajib: 117, pilihan: 28, maxTotal: 160,
+  courses: [
+    [1, 'COM60014', 'Pemrograman Dasar', 5, 1, ''],
+    [1, 'COM60016', 'Pengantar Keilmuan Komputer', 2, 0, ''],
+    [1, 'CSD60704', 'Desain Basis Data', 2, 0, ''],
+    [1, 'CIS61102', 'Infrastruktur Teknologi Informasi', 2, 0, ''],
+    [1, 'CIS61103', 'Manajemen Bisnis', 2, 0, ''],
+    [1, 'CIS61104', 'Pengantar Sistem Informasi', 2, 0, ''],
+    [1, 'CIS61106', 'Keamanan dan Data Privasi', 2, 0, ''],
+    [1, 'COM60015', 'Matematika Diskrit', 2, 0, ''],
+    [1, 'MPK60006', 'Pendidikan Kewarganegaraan', 2, 0, ''],
+    [2, 'COM60024', 'Pemrograman Lanjut', 5, 1, 'COM60014'],
+    [2, 'CSD60705', 'Pemrograman SQL', 3, 1, 'CSD60704'],
+    [2, 'CIS62102', 'Desain Antar Muka Pengguna', 3, 0, ''],
+    [2, 'CIS62103', 'Jaringan dan Komputasi Awan', 2, 0, ''],
+    [2, 'CIS62104', 'Pemodelan Proses Bisnis', 3, 1, 'CIS61103'],
+    [2, 'CIS62106', 'Pemrograman Web', 4, 0, ''],
+    [3, 'CSD60712', 'Probabilitas dan Statistika', 3, 0, ''],
+    [3, 'CIS61111', 'Sistem Informasi berbasis Kecerdasan Buatan', 2, 0, ''],
+    [3, 'CSD60706', 'Administrasi Basis Data', 3, 1, 'CSD60705'],
+    [3, 'CIS61108', 'Rekayasa Sistem Informasi', 5, 1, 'CIS61104'],
+    [3, 'CSD60703', 'Tata Kelola Teknologi Informasi', 3, 0, ''],
+    [3, 'CIS61115', 'Komunikasi Profesional', 2, 0, ''],
+    [3, 'CIS61116', 'Manajemen Keuangan', 2, 0, ''],
+    [4, 'CIS62112', 'Kecerdasan Bisnis dan Analitik', 3, 0, 'CSD60705'],
+    [4, 'CSD60711', 'Perancangan Pengalaman Pengguna', 3, 0, 'CIS62102'],
+    [4, 'CIS62108', 'Enterprise Architecture I', 2, 0, ''],
+    [4, 'CSD60715', 'Analisis Data Penelitian Kuantitatif', 3, 0, 'CSD60712'],
+    [4, 'CIS62105', 'Pengantar Sains Data', 2, 0, 'CSD60712'],
+    [4, 'UBU60003', 'Kewirausahaan', 2, 0, ''],
+    [4, 'MPK60008', 'Pendidikan Pancasila', 2, 0, ''],
+    [4, 'UBU60004', 'Bahasa Inggris', 2, 0, ''],
+    [4.5, 'UBU60005', 'PKM / KKN / KKNT / Mahasiswa Membangun Desa', 4, 0, ''],
+    [5, 'MPK60007', 'Bahasa Indonesia', 2, 0, ''],
+    [5, 'COM60051', 'Metodologi Penelitian dan Penulisan Ilmiah', 3, 0, 'min. 60 SKS'],
+    [5, 'COM60052', 'Etika Profesi', 2, 0, ''],
+    [5, 'CIS61110', 'Pengembangan Aplikasi Mobile', 3, 1, 'COM60024'],
+    [5, 'CIS61112', 'Dasar Manajemen Proyek', 2, 0, ''],
+    [5, 'CIS61113', 'Sistem Enterprise', 3, 0, ''],
+    [5, 'CIS61107', 'Manajemen Produk', 3, 0, ''],
+    [6, 'MPK60001', 'Pendidikan Agama', 2, 0, ''],
+    [6, 'COM60061', 'Capstone Project', 3, 0, ''],
+    [7, 'UBU60002', 'Praktik Kerja Lapang / Magang', 4, 0, 'min. 90 SKS'],
+    [8, 'UBU60001', 'Skripsi', 6, 0, 'min. 120 SKS'],
+  ],
+  /* [kode, nama, sks, praktikum, penawaran, prasyarat] */
+  electives: [
+    ['CIS62110', 'Perencanaan Strategis Sistem Informasi', 3, 0, 'Genap', ''],
+    ['CIS62126', 'Evaluasi Pengalaman dan Antarmuka Pengguna', 3, 0, 'Genap', 'CIS62102'],
+    ['CIS61128', 'Keamanan Jaringan dan Siber', 3, 0, 'Ganjil & Genap', 'CIS62103'],
+    ['CIS60102', 'Pengembangan Aplikasi Multiplatform', 2, 0, 'Ganjil & Genap', 'COM60024'],
+    ['CIS61118', 'Rekayasa Kebutuhan Sistem Informasi', 2, 0, 'Ganjil', 'CIS61104'],
+    ['CIS61127', 'Pengembangan Berorientasi Penggunaan Ulang', 2, 0, 'Genap', 'COM60024'],
+    ['CIS62113', 'Pola-Pola Perancangan', 2, 0, 'Genap', 'COM60024'],
+    ['CIS62114', 'Pengembangan Aplikasi Mobile Lanjut', 3, 0, 'Genap', 'CIS61110'],
+    ['CIS62115', 'Manajemen Investasi Teknologi Informasi', 3, 0, 'Genap', 'CSD60703'],
+    ['CSD60701', 'Manajemen Layanan Teknologi Informasi', 2, 0, 'Genap', 'CSD60703'],
+    ['CIS61119', 'Manajemen Risiko dan Kontrol Sistem Informasi', 2, 0, 'Ganjil', 'CSD60703'],
+    ['CIS62117', 'Manajemen Rantai Suplai', 2, 0, 'Genap', 'CSD60703'],
+    ['CIS61120', 'Perbaikan Bisnis Proses', 2, 0, 'Ganjil', 'CIS62104'],
+    ['CSD60702', 'Sistem Pendukung Keputusan', 3, 0, 'Genap', ''],
+    ['CSD60716', 'Analisis Data Penelitian Kualitatif', 3, 0, 'Genap', 'CSD60712'],
+    ['CSD60707', 'Big Data dan Analitik', 2, 0, 'Genap', 'CSD60705'],
+    ['CSD60709', 'Gudang Data', 3, 0, 'Genap', 'CSD60705'],
+    ['CSD60708', 'Penambangan Data', 3, 0, 'Genap', 'CSD60705'],
+    ['CIS61123', 'Enterprise Architecture II', 3, 1, 'Ganjil', 'CIS62108'],
+    ['CIS61124', 'Pengembangan Gim', 2, 0, 'Ganjil', 'COM60024'],
+    ['CIS60101', 'Perkembangan dan Tren Teknologi Dijital', 2, 0, 'Ganjil & Genap', ''],
+    ['CSD60717', 'Teknologi Blockchain dan Platform Keuangan Dijital', 2, 0, 'Genap', 'CIS61103'],
+    ['CIS61125', 'Pengantar GeoInformasi', 3, 1, 'Ganjil', ''],
+    ['CIS62125', 'GeoInformasi Lanjut', 3, 1, 'Genap', 'CIS61125'],
+    ['CSD60710', 'Sistem Informasi Geografis', 3, 1, 'Ganjil', ''],
+    ['CIS60104', 'Transformasi Pemerintah', 2, 0, 'Ganjil & Genap', ''],
+    ['CIS62109', 'Pengujian dan Evaluasi Sistem Informasi', 2, 0, 'Ganjil', ''],
+    ['CIS60103', 'Pemrograman Web Lanjut', 3, 0, 'Ganjil & Genap', 'CIS62106'],
+    ['CIS60105', 'Strategi Transformasi Digital', 2, 0, 'Ganjil & Genap', ''],
+    ['CIS60106', 'Sistem Informasi Berkelanjutan', 2, 0, 'Ganjil & Genap', ''],
+  ],
+};
+const GRADES = { A: 4, 'B+': 3.5, B: 3, 'C+': 2.5, C: 2, 'D+': 1.5, D: 1, E: 0 };
+const C_STATUS = { belum: 'Belum', rencana: 'Direncanakan', diambil: 'Sedang diambil', lulus: 'Lulus' };
+const semLabel = s => (s === 4.5 || s === '4.5' ? 'Semester antara' : s ? `Semester ${s}` : 'Belum dijadwalkan');
+const courseList = () => (S.courses || []).filter(c => c.type !== 'meta');
+const courseMeta = () => (S.courses || []).find(c => c.type === 'meta') || null;
+const passed = c => c.status === 'lulus' && c.grade !== 'E';
+
+function studyStats() {
+  const cs = courseList(), meta = courseMeta() || {};
+  const target = num(meta.target) || KURIKULUM_SI_2024.total;
+  const lulus = cs.filter(passed);
+  const sks = arr => arr.reduce((a, c) => a + num(c.sks), 0);
+  const graded = cs.filter(c => c.status === 'lulus' && c.grade in GRADES);
+  const gSks = sks(graded);
+  const ipk = gSks ? graded.reduce((a, c) => a + GRADES[c.grade] * num(c.sks), 0) / gSks : null;
+  return {
+    target, cur: num(meta.cur_sem) || 1,
+    lulusSks: sks(lulus), diambilSks: sks(cs.filter(c => c.status === 'diambil')), rencanaSks: sks(cs.filter(c => c.status === 'rencana')),
+    wajibLulus: sks(lulus.filter(c => c.type === 'wajib')), pilihanLulus: sks(lulus.filter(c => c.type === 'pilihan')),
+    pilihanPlan: sks(cs.filter(c => c.type === 'pilihan' && c.status !== 'belum')),
+    ipk, gradedSks: gSks, nDiambil: cs.filter(c => c.status === 'diambil').length,
+  };
+}
+function ips(list) {
+  const g = list.filter(c => c.status === 'lulus' && c.grade in GRADES);
+  const s = g.reduce((a, c) => a + num(c.sks), 0);
+  return s ? g.reduce((a, c) => a + GRADES[c.grade] * num(c.sks), 0) / s : null;
+}
+const fmtIp = v => (v == null ? '—' : v.toFixed(2).replace('.', ','));
+function prereqMissing(c) {
+  if (!c.prereq || !/^[A-Z]{3}\d/.test(c.prereq)) return null;
+  const p = courseList().find(x => x.code === c.prereq);
+  if (p && passed(p)) return null;
+  return p ? p.name : c.prereq;
+}
+
+function renderKuliah() {
+  const cs = courseList();
+  if (!cs.length) return kuliahOnboarding();
+  const st = studyStats(), tab = S.ui.kTab;
+  const pct = Math.min(100, Math.round(st.lulusSks / st.target * 100));
+  const pctPlan = Math.min(100 - pct, Math.round(st.diambilSks / st.target * 100));
+  return `
+  <header class="page-head">
+    <div><p class="eyebrow">Rencana kuliah</p><h1>Studi</h1></div>
+    <label class="cur-sem">Semester sekarang<select data-change="curSem">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].map(n => `<option ${n === st.cur ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+  </header>
+
+  <section class="card progress-card">
+    <div class="pc-top">
+      <div><span class="pc-big">${st.lulusSks}</span><span class="pc-of">/ ${st.target} SKS lulus</span></div>
+      <div class="pc-right"><span class="muted small">Sisa</span><b>${Math.max(0, st.target - st.lulusSks)} SKS</b></div>
+    </div>
+    <div class="pbar"><i style="width:${pct}%"></i><i class="plan" style="width:${pctPlan}%"></i></div>
+    <div class="legend"><span><i style="--c:var(--mint)"></i>Lulus ${pct}%</span><span><i style="--c:var(--accent)"></i>Sedang diambil ${st.diambilSks} SKS</span>${st.rencanaSks ? `<span><i style="--c:var(--faint)"></i>Direncanakan ${st.rencanaSks} SKS</span>` : ''}</div>
+  </section>
+
+  <div class="stats">
+    ${stat('IPK', fmtIp(st.ipk), st.gradedSks ? `dari ${st.gradedSks} SKS bernilai` : 'isi nilai MK yang sudah lulus', st.ipk != null && st.ipk >= 3 ? 'good' : '')}
+    ${stat('Sedang diambil', `${st.diambilSks} SKS`, `${st.nDiambil} mata kuliah`)}
+    ${stat('Wajib lulus', `${st.wajibLulus}/${KURIKULUM_SI_2024.wajib}`, 'SKS mata kuliah wajib')}
+    ${stat('Pilihan', `${st.pilihanLulus}/${KURIKULUM_SI_2024.pilihan}`, `SKS lulus · ${st.pilihanPlan} SKS dipilih`)}
+  </div>
+
+  <div class="toolbar">
+    <div class="tabs">
+      ${[['semester', 'Per semester'], ['semua', 'Semua MK'], ['pilihan', 'MK Pilihan']].map(([k, l]) => `<button class="tab ${tab === k ? 'on' : ''}" data-act="kTab" data-v="${k}">${l}</button>`).join('')}
+    </div>
+    <button class="btn sm" data-act="courseNew">${ICON.plus} MK lain</button>
+  </div>
+
+  ${tab === 'semester' ? kuliahSemesters(st) : tab === 'semua' ? kuliahAll() : kuliahElectives()}`;
+}
+
+function kuliahOnboarding() {
+  return `
+  <header class="page-head"><div><p class="eyebrow">Rencana kuliah</p><h1>Studi</h1></div></header>
+  <section class="card onboard">
+    <h2>Mulai rencana kuliahmu</h2>
+    <p class="muted">Muat daftar mata kuliah resmi <b>S1 Sistem Informasi FILKOM UB, Kurikulum 2024–2027</b>: total <b>145 SKS</b> (117 SKS wajib + 28 SKS pilihan dari 30 MK pilihan). Semua data bisa diubah setelah dimuat.</p>
+    <form class="seed-form" data-form="seedKurikulum">
+      <label>Sekarang kamu semester berapa?<select name="cur">${[1, 2, 3, 4, 5, 6, 7, 8].map(n => `<option ${n === 5 ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      <label class="check"><input type="checkbox" name="markPast" checked> Tandai MK wajib di semester sebelumnya sebagai <b>lulus</b> (nilainya diisi belakangan)</label>
+      <label class="check"><input type="checkbox" name="markCur" checked> Tandai MK wajib semester ini sebagai <b>sedang diambil</b></label>
+      <button class="btn primary">Muat kurikulum</button>
+    </form>
+    <p class="muted small">Sumber: Pedoman Pelaksanaan Kurikulum Program Studi S1 Sistem Informasi FILKOM UB 2024–2027 (jalur reguler).</p>
+    <button class="btn ghost sm" data-act="courseNew">Atau tambah mata kuliah manual</button>
   </section>`;
 }
+
+function courseRow(c) {
+  const miss = (c.status === 'diambil' || c.status === 'rencana') ? prereqMissing(c) : null;
+  return `<li class="crow st-${c.status}" data-act="courseEdit" data-id="${c.id}">
+    <span class="cdot" title="${C_STATUS[c.status]}"></span>
+    <span class="cname">${esc(c.name)}<small>${esc(c.code || '')}${c.type === 'pilihan' ? ' · pilihan' : ''}${c.prak ? ' · praktikum' : ''}</small>
+      ${miss ? `<em class="cwarn">⚠ prasyarat: ${esc(miss)}</em>` : ''}</span>
+    <span class="csks">${num(c.sks)} SKS</span>
+    ${c.status === 'lulus' && c.grade ? `<span class="cgrade g-${c.grade.replace('+', 'p')}">${esc(c.grade)}</span>` : c.status === 'diambil' ? '<span class="cgrade now">•</span>' : '<span class="cgrade"></span>'}
+  </li>`;
+}
+
+function kuliahSemesters(st) {
+  const cs = courseList();
+  const sems = uniq([1, 2, 3, 4, 4.5, 5, 6, 7, 8, ...cs.map(c => num(c.sem)).filter(Boolean)]).sort((a, b) => a - b);
+  const unplanned = cs.filter(c => !num(c.sem));
+  return `<div class="sem-grid">${sems.map(s => {
+    const list = cs.filter(c => num(c.sem) === s).sort((a, b) => (a.type === b.type ? 0 : a.type === 'wajib' ? -1 : 1) || a.name.localeCompare(b.name));
+    const sks = list.reduce((a, c) => a + num(c.sks), 0);
+    const isCur = s === st.cur, ip = ips(list);
+    const recPil = s === 6 ? 15 : s === 7 ? 13 : 0;
+    const pil = list.filter(c => c.type === 'pilihan').reduce((a, c) => a + num(c.sks), 0);
+    return `<section class="card sem-card ${isCur ? 'cur' : ''} ${s === 4.5 ? 'antara' : ''}">
+      <div class="sem-head"><h3>${semLabel(s)}</h3>${isCur ? '<span class="chip today">Sekarang</span>' : ''}<span class="spacer"></span>
+        <span class="muted small">${sks} SKS${ip != null ? ` · IPS ${fmtIp(ip)}` : ''}</span></div>
+      ${list.length ? `<ul class="clist">${list.map(courseRow).join('')}</ul>` : '<p class="empty small">Belum ada mata kuliah.</p>'}
+      ${recPil ? `<button class="slot ${pil >= recPil ? 'ok' : ''}" data-act="kTab" data-v="pilihan">Slot MK pilihan: ${pil}/${recPil} SKS (rekomendasi) → pilih</button>` : ''}
+      <button class="btn ghost sm add-c" data-act="courseNew" data-sem="${s}">${ICON.plus} Tambah MK</button>
+    </section>`;
+  }).join('')}</div>
+  ${unplanned.filter(c => c.type !== 'pilihan' || c.status !== 'belum').length ? `<section class="card"><h3>Belum dijadwalkan</h3><ul class="clist">${unplanned.filter(c => c.type !== 'pilihan' || c.status !== 'belum').map(courseRow).join('')}</ul></section>` : ''}`;
+}
+
+function kuliahAll() {
+  const q = S.ui.kQuery.toLowerCase(), f = S.ui.kFilter;
+  const F = { semua: () => true, wajib: c => c.type === 'wajib', pilihan: c => c.type === 'pilihan', belum: c => c.status === 'belum', diambil: c => c.status === 'diambil', lulus: c => c.status === 'lulus' };
+  const list = courseList().filter(F[f]).filter(c => !q || `${c.name} ${c.code}`.toLowerCase().includes(q))
+    .sort((a, b) => (num(a.sem) || 99) - (num(b.sem) || 99) || a.name.localeCompare(b.name));
+  return `<section class="card">
+    <div class="all-tools">
+      <label class="search">${ICON.search}<input type="search" placeholder="Cari mata kuliah / kode…" value="${esc(S.ui.kQuery)}" data-input="kQuery"></label>
+      <div class="chips">${Object.keys(F).map(k => `<button class="chip-btn ${k === f ? 'on' : ''}" data-act="kFilter" data-v="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div>
+    </div>
+    <div id="kAll">${list.length ? `<ul class="clist">${list.map(c => courseRow(c).replace('</small>', ` · ${semLabel(c.sem)}</small>`)).join('')}</ul>` : '<p class="empty">Tidak ada yang cocok.</p>'}</div>
+  </section>`;
+}
+
+function kuliahElectives() {
+  const st = studyStats();
+  const el = courseList().filter(c => c.type === 'pilihan').sort((a, b) => a.name.localeCompare(b.name));
+  const opts = (c) => [5, 6, 7, 8, 9, 10].map(n => `<option value="${n}" ${num(c.sem) === n ? 'selected' : ''}>Sem ${n}</option>`).join('');
+  return `<section class="card">
+    <div class="card-head"><h2>Mata kuliah pilihan</h2><span class="muted small">Dipilih ${st.pilihanPlan}/${KURIKULUM_SI_2024.pilihan} SKS · rekomendasi: semester 6 (15 SKS) & 7 (13 SKS)</span></div>
+    <div class="pbar slim"><i style="width:${Math.min(100, st.pilihanLulus / 28 * 100)}%"></i><i class="plan" style="width:${Math.min(100, Math.max(0, st.pilihanPlan - st.pilihanLulus) / 28 * 100)}%"></i></div>
+    ${el.length ? `<ul class="elist">${el.map(c => {
+      const chosen = c.status !== 'belum';
+      const miss = prereqMissing(c);
+      return `<li class="${chosen ? 'chosen' : ''}">
+        <div class="el-main" data-act="courseEdit" data-id="${c.id}"><b>${esc(c.name)}</b>
+          <small>${esc(c.code)} · ${num(c.sks)} SKS · ${esc(c.offer || '')}${c.prak ? ' · praktikum' : ''}${c.prereq ? ` · prasyarat ${esc(courseList().find(x => x.code === c.prereq)?.name || c.prereq)}` : ''}</small>
+          ${miss && !chosen ? '' : miss ? `<em class="cwarn">⚠ prasyarat belum lulus</em>` : ''}</div>
+        ${chosen ? `<span class="chip ${c.status === 'lulus' ? 'today' : ''}">${C_STATUS[c.status]}${num(c.sem) ? ' · Sem ' + num(c.sem) : ''}</span>
+          <button class="btn ghost sm" data-act="electiveDrop" data-id="${c.id}">Batal</button>`
+        : `<select data-change="electivePlan" data-id="${c.id}" aria-label="Rencanakan di semester"><option value="">+ Rencanakan…</option>${opts(c)}</select>`}
+      </li>`;
+    }).join('')}</ul>` : '<p class="empty">Belum ada MK pilihan. Tambahkan lewat “MK lain”.</p>'}
+  </section>`;
+}
+
+function courseModal(c) {
+  const isNew = !c.id;
+  const semOpts = [['', 'Belum dijadwalkan'], ...[1, 2, 3, 4].map(n => [n, `Semester ${n}`]), [4.5, 'Semester antara'], ...[5, 6, 7, 8, 9, 10, 11, 12, 13, 14].map(n => [n, `Semester ${n}`])];
+  return `<form class="modal-body" data-form="saveCourse" data-id="${c.id || ''}">
+    <h2>${isNew ? 'Tambah mata kuliah' : esc(c.name)}</h2>
+    ${isNew ? '' : `<p class="muted small">${esc(c.code || '')}${c.prereq ? ` · prasyarat: ${esc(courseList().find(x => x.code === c.prereq)?.name || c.prereq)}` : ''}${c.offer ? ` · ditawarkan ${esc(c.offer)}` : ''}</p>`}
+    <label>Nama mata kuliah<input name="name" required value="${esc(c.name || '')}" autocomplete="off"></label>
+    <div class="row3">
+      <label>Kode<input name="code" value="${esc(c.code || '')}" autocomplete="off"></label>
+      <label>SKS<input name="sks" inputmode="numeric" required value="${esc(c.sks ?? '')}"></label>
+      <label>Sifat<select name="type"><option value="wajib" ${c.type !== 'pilihan' ? 'selected' : ''}>Wajib</option><option value="pilihan" ${c.type === 'pilihan' ? 'selected' : ''}>Pilihan</option></select></label>
+    </div>
+    <div class="row3">
+      <label>Semester<select name="sem">${semOpts.map(([v, l]) => `<option value="${v}" ${String(num(c.sem) || '') === String(v) ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label>Status<select name="status">${Object.entries(C_STATUS).map(([k, l]) => `<option value="${k}" ${k === (c.status || 'belum') ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label>Nilai<select name="grade"><option value="">—</option>${Object.keys(GRADES).map(g => `<option ${g === c.grade ? 'selected' : ''}>${g}</option>`).join('')}</select></label>
+    </div>
+    <label>Catatan<input name="note" value="${esc(c.note || '')}" placeholder="mis. dosen, kelas, jadwal" autocomplete="off"></label>
+    <div class="modal-actions">
+      ${isNew ? '' : `<button type="button" class="btn ghost danger" data-act="courseDelete" data-id="${c.id}">${ICON.trash} Hapus</button><span class="spacer"></span>`}
+      <button type="button" class="btn ghost" data-act="closeModal">Batal</button>
+      <button class="btn primary">Simpan</button>
+    </div>
+  </form>`;
+}
+
+function homeStudyCard() {
+  if (!courseList().length) return '';
+  const st = studyStats(), pct = Math.min(100, Math.round(st.lulusSks / st.target * 100));
+  return `<section class="card">
+    <div class="card-head"><h2>Studi</h2><a class="link" href="#kuliah">Rencana →</a></div>
+    <div class="study-mini"><b>${st.lulusSks}</b><span>/ ${st.target} SKS</span><span class="spacer"></span><span class="muted small">IPK</span><b>${fmtIp(st.ipk)}</b></div>
+    <div class="pbar slim"><i style="width:${pct}%"></i><i class="plan" style="width:${Math.min(100 - pct, st.diambilSks / st.target * 100)}%"></i></div>
+    <p class="muted small" style="margin:8px 0 0">Semester ${st.cur} · sedang mengambil ${st.diambilSks} SKS · sisa ${Math.max(0, st.target - st.lulusSks)} SKS</p>
+  </section>`;
+}
+
+const KULIAH_FORM = {
+  async seedKurikulum(f, d) {
+    const cur = +d.cur || 1, markPast = !!d.markPast, markCur = !!d.markCur;
+    const K = KURIKULUM_SI_2024;
+    if (!courseMeta()) await add('courses', { type: 'meta', code: '__meta', name: K.label, cur_sem: cur, target: K.total, curriculum: 'SI-2024' });
+    for (const [sem, code, name, sks, prak, prereq] of K.courses) {
+      const status = markPast && sem < cur ? 'lulus' : markCur && sem === cur ? 'diambil' : 'belum';
+      await add('courses', { type: 'wajib', code, name, sks, sem, prak: !!prak, prereq, offer: '', status, grade: '', note: '' });
+    }
+    for (const [code, name, sks, prak, offer, prereq] of K.electives)
+      await add('courses', { type: 'pilihan', code, name, sks, sem: '', prak: !!prak, prereq, offer, status: 'belum', grade: '', note: '' });
+    render(); toast(`${K.courses.length + K.electives.length} mata kuliah dimuat`);
+  },
+  async saveCourse(f, d) {
+    const data = { name: d.name.trim(), code: d.code.trim(), sks: num(d.sks), type: d.type, sem: d.sem === '' ? '' : num(d.sem), status: d.status, grade: d.grade, note: d.note.trim() };
+    if (data.grade && data.status !== 'lulus' && data.grade !== 'E') data.status = 'lulus';
+    if (f.dataset.id) await patch('courses', f.dataset.id, data);
+    else await add('courses', { ...data, prak: false, prereq: '', offer: '' });
+    closeModal(); render(); toast('Mata kuliah disimpan');
+  },
+};
+const KULIAH_ACT = {
+  kTab(el) { S.ui.kTab = el.dataset.v; render(); },
+  kFilter(el) { S.ui.kFilter = el.dataset.v; render(); },
+  courseEdit(el) { const c = find('courses', el.dataset.id); if (c) openModal(courseModal(c)); },
+  courseNew(el) { openModal(courseModal({ sem: el.dataset.sem ? num(el.dataset.sem) : '', type: 'wajib', status: el.dataset.sem && num(el.dataset.sem) === studyStats().cur ? 'diambil' : 'rencana' })); },
+  async courseDelete(el) {
+    const c = find('courses', el.dataset.id); if (!c) return;
+    if (!confirm(`Hapus mata kuliah "${c.name}"?`)) return;
+    await del('courses', c.id); closeModal(); render();
+  },
+  async electiveDrop(el) { await patch('courses', el.dataset.id, { status: 'belum', sem: '', grade: '' }); render(); },
+};
+const KULIAH_CHANGE = {
+  async curSem(el) {
+    const m = courseMeta();
+    if (m) await patch('courses', m.id, { cur_sem: +el.value });
+    else await add('courses', { type: 'meta', code: '__meta', name: KURIKULUM_SI_2024.label, cur_sem: +el.value, target: KURIKULUM_SI_2024.total });
+    render();
+  },
+  async electivePlan(el) {
+    if (!el.value) return;
+    const s = num(el.value);
+    await patch('courses', el.dataset.id, { sem: s, status: s === studyStats().cur ? 'diambil' : 'rencana' });
+    render(); toast('MK pilihan direncanakan');
+  },
+};
 
 /* ================================================================ DATA */
 function renderData() {
@@ -960,10 +1959,11 @@ function renderData() {
       <h2>Isi saat ini</h2>
       <dl class="kv">
         <dt>Catatan</dt><dd>${S.notes.length}</dd>
-        <dt>Tugas (aktif / selesai)</dt><dd>${S.todos.filter(x => !x.done).length} / ${S.todos.filter(x => x.done).length}</dd>
+        <dt>Tugas & to-do (aktif / selesai)</dt><dd>${S.todos.filter(x => !x.done).length} / ${S.todos.filter(x => x.done).length}</dd>
         <dt>Transaksi</dt><dd>${S.transactions.length}</dd>
         <dt>Kebiasaan</dt><dd>${S.habits.length}</dd>
         <dt>Catatan olahraga</dt><dd>${S.workouts.length}</dd>
+        <dt>Mata kuliah</dt><dd>${courseList().length}</dd>
       </dl>
     </section>
     <section class="card">
@@ -1445,24 +2445,38 @@ function toast(msg, type = '') {
 }
 
 /* ================================================================ actions */
-const newTodo = d => ({ title: String(d.title || '').trim(), due: d.due || '', priority: d.priority || 'sedang', list: String(d.list || '').trim(), notes: '', done: false, done_at: '' });
 
 const FORM = {
   async quickTodo(f, d) {
     if (!d.title.trim()) return;
-    await add('todos', newTodo({ title: d.title, due: ymd() }));
+    const kind = d.kind === 'umum' ? 'umum' : 'kuliah';
+    S.ui.quickKind = kind;
+    const x = await add('todos', newTodo({ ...d, kind, due: d.due || (kind === 'umum' ? ymd() : ''),
+      time_start: kind === 'umum' ? d.time_end : '', time_end: kind === 'kuliah' ? d.time_end : '' }));
+    if (kind === 'kuliah' && x.course) S.ui.lastCourse = x.course;
+    S.ui.flash = x.id; setTimeout(() => { if (S.ui.flash === x.id) S.ui.flash = null; }, 2500);
     S.ui.focus = '[data-form="quickTodo"] input[name="title"]';
-    render(); toast('Tugas ditambahkan untuk hari ini');
+    render(); toast(kind === 'kuliah' ? 'Tugas kuliah ditambahkan' : 'To-do ditambahkan');
   },
   async addTodo(f, d) {
     if (!d.title.trim()) return;
-    await add('todos', newTodo(d));
+    const x = await add('todos', newTodo(d));
+    if (x.kind === 'kuliah' && x.course) S.ui.lastCourse = x.course;
+    revealTodo(x);
     S.ui.focus = '#todoTitle';
-    render(); toast('Tugas ditambahkan');
+    render(); toast(x.kind === 'kuliah' ? 'Tugas kuliah ditambahkan' : 'To-do ditambahkan');
   },
   async editTodo(f, d) {
-    await patch('todos', f.dataset.id, { title: d.title.trim(), notes: d.notes.trim(), due: d.due || '', priority: d.priority, list: d.list.trim() });
-    closeModal(); render(); toast('Tugas diperbarui');
+    const x = newTodo(d);
+    delete x.done; delete x.done_at;
+    x.notes = String(d.notes || '').trim();
+    await patch('todos', f.dataset.id, x);
+    closeModal(); render(); toast('Tersimpan');
+  },
+  async imgUrl(f, d) {
+    const u = normUrl(d.url);
+    if (!u) return;
+    closeModal(); insertFigure({ src: u });
   },
   async addTx(f, d) {
     const amount = parseMoney(d.amount);
@@ -1494,27 +2508,33 @@ const ACT = {
     await del('todos', x.id); render(); toast('Tugas dihapus');
   },
   async clearDone() {
-    const done = S.todos.filter(x => x.done && (!S.ui.todoList || x.list === S.ui.todoList));
+    const K = S.ui.todoKind;
+    const done = S.todos.filter(x => x.done && todoKind(x) === K && (!S.ui.todoList || todoGroupKey(x, K) === S.ui.todoList));
     if (!done.length || !confirm(`Hapus ${done.length} tugas yang sudah selesai?`)) return;
     for (const x of done) await del('todos', x.id);
     render(); toast(`${done.length} tugas dihapus`);
   },
   todoFilter(el) { S.ui.todoFilter = el.dataset.v; render(); },
+  todoKind(el) { if (S.ui.todoKind !== el.dataset.v) { S.ui.todoKind = el.dataset.v; S.ui.todoList = ''; } render(); },
+  goTodos(el) { S.ui.todoKind = el.dataset.v; S.ui.todoList = ''; S.ui.todoFilter = 'aktif'; if (location.hash === '#tugas') render(); else location.hash = '#tugas'; },
+  navMore() { document.body.classList.toggle('more-open'); },
+  hMonth(el) { const n = +el.dataset.n; S.ui.hMonth = n ? shiftMonth(S.ui.hMonth, n) : monthKey(new Date()); if (S.ui.hMonth > monthKey(new Date())) S.ui.hMonth = monthKey(new Date()); render(); },
+  jumpHeading(el) { const h = [...$$('#noteDoc h2, #noteDoc h3, #noteDoc h4')].filter(x => x.textContent.trim())[+el.dataset.i]; if (h) h.scrollIntoView({ behavior: 'smooth', block: 'center' }); },
   todoList(el) { S.ui.todoList = S.ui.todoList === el.dataset.v ? '' : el.dataset.v; render(); },
   closeModal() { closeModal(); },
 
   /* catatan */
   async newNote() {
     await leaveNote();
-    const n = await add('notes', { title: '', content: '', tags: [], pinned: false });
-    S.ui.noteId = n.id; S.ui.notePreview = false; S.ui.noteQuery = ''; S.ui.noteTag = '';
+    const n = await add('notes', { title: '', html: '', content: '', tags: [], pinned: false });
+    S.ui.noteId = n.id; S.ui.noteQuery = ''; S.ui.noteTag = '';
     S.ui.focus = '#noteTitle';
     if (S.ui.view !== 'catatan') location.hash = '#catatan'; else render();
   },
   async openNote(el) {
     if (el.dataset.id === S.ui.noteId && S.ui.view === 'catatan') return;
     await leaveNote();
-    S.ui.noteId = el.dataset.id; S.ui.notePreview = false;
+    S.ui.noteId = el.dataset.id;
     if (S.ui.view !== 'catatan') location.hash = '#catatan'; else render();
   },
   async closeNote() { await leaveNote(); S.ui.noteId = null; render(); },
@@ -1522,21 +2542,15 @@ const ACT = {
     const n = find('notes', S.ui.noteId); if (!n) return;
     await flushNote(); await patch('notes', n.id, { pinned: !n.pinned }); render();
   },
-  togglePreview() { S.ui.notePreview = !S.ui.notePreview; if (!S.ui.notePreview) S.ui.focus = '#noteBody'; render(); },
   async deleteNote() {
     const n = find('notes', S.ui.noteId); if (!n) return;
-    if ((n.title || n.content) && !confirm(`Hapus catatan "${n.title || 'Tanpa judul'}"?`)) return;
-    clearTimeout(noteSave.timer); noteSave.pending = null;
+    if ((n.title || n.content || noteHasImg(n)) && !confirm(`Hapus catatan "${n.title || 'Tanpa judul'}"?`)) return;
+    clearTimeout(noteSave.timer); clearTimeout(docTimer); docTimer = null; noteSave.pending = null;
+    const paths = [...(n.html || '').matchAll(/data-path="([^"]+)"/g)].map(m => m[1]);
     await del('notes', n.id); S.ui.noteId = null; render(); toast('Catatan dihapus');
+    if (cloud.active) cloud.removeFiles(paths);
   },
   noteTag(el) { S.ui.noteTag = S.ui.noteTag === el.dataset.v ? '' : el.dataset.v; refreshNoteList(); },
-  toggleCheck(el) {
-    const n = find('notes', S.ui.noteId); if (!n) return;
-    const lines = (n.content || '').split('\n'), i = +el.dataset.line;
-    if (lines[i] == null) return;
-    lines[i] = lines[i].replace(/\[([ xX])\]/, (_, c) => (c.trim() ? '[ ]' : '[x]'));
-    queueNoteSave(n.id, { content: lines.join('\n') }); render();
-  },
 
   /* keuangan */
   monthPrev() { S.ui.month = shiftMonth(S.ui.month, -1); render(); },
@@ -1582,19 +2596,23 @@ const INPUT = {
     queueNoteSave(S.ui.noteId, { [el.name]: v });
   },
   noteSearch(el) { S.ui.noteQuery = el.value; refreshNoteList(); },
+  kQuery(el) { S.ui.kQuery = el.value; S.ui.focus = '[data-input="kQuery"]'; render(); },
   money(el) { const digits = el.value.replace(/\D/g, '').replace(/^0+/, ''); el.value = digits ? Number(digits).toLocaleString('id-ID') : ''; },
 };
 
 const CHANGE = {
   txType(el) { S.ui.txType = el.value; const c = $('#txCategory'); if (c) c.setAttribute('list', el.value === 'masuk' ? 'catIn' : 'catOut'); },
   theme(el) { setTheme(el.value); },
+  todoFormKind(el) { const f = el.form; f.classList.remove('k-kuliah', 'k-umum'); f.classList.add('k-' + el.value); },
+  quickKind(el) { S.ui.quickKind = el.value; const f = el.form; f.classList.remove('k-kuliah', 'k-umum'); f.classList.add('k-' + el.value); const i = $('input[name="title"]', f); if (i) { i.placeholder = el.value === 'kuliah' ? 'Tugas kuliah baru… (Enter)' : 'To-do baru untuk hari ini… (Enter)'; i.focus(); } },
+  async imgFile(el) { const files = [...el.files]; for (const f of files) await insertImageFile(f); },
   async importFile(el) {
     const file = el.files[0]; if (!file) return;
     let data;
     try { data = JSON.parse(await file.text()); } catch (e) { el.value = ''; throw new Error('File ini bukan JSON yang valid'); }
     const c = data && data.collections;
     if (!c) { el.value = ''; throw new Error('Ini bukan file cadangan Ruang Pribadi'); }
-    const info = `${(c.notes || []).length} catatan, ${(c.todos || []).length} tugas, ${(c.transactions || []).length} transaksi, ${(c.habits || []).length} kebiasaan`;
+    const info = `${(c.notes || []).length} catatan, ${(c.todos || []).length} tugas, ${(c.transactions || []).length} transaksi, ${(c.habits || []).length} kebiasaan, ${(c.workouts || []).length} olahraga, ${(c.courses || []).filter(x => x.type !== 'meta').length} mata kuliah`;
     if (!confirm(`Pulihkan dari cadangan ini?\n\nIsi file: ${info}.\n\nSemua data sekarang akan DIGANTI. (Salinan data lama tetap disimpan otomatis di folder data/backup.)`)) { el.value = ''; return; }
     if (cloud.active) {
       if (!navigator.onLine) { el.value = ''; throw new Error('Butuh koneksi internet untuk memulihkan data'); }
@@ -1611,12 +2629,12 @@ const CHANGE = {
   },
 };
 
-Object.assign(ACT, SPORT_ACT, CLOUD_ACT);
-Object.assign(FORM, SPORT_FORM, CLOUD_FORM);
-Object.assign(CHANGE, SPORT_CHANGE);
+Object.assign(ACT, SPORT_ACT, CLOUD_ACT, KULIAH_ACT);
+Object.assign(FORM, SPORT_FORM, CLOUD_FORM, KULIAH_FORM);
+Object.assign(CHANGE, SPORT_CHANGE, KULIAH_CHANGE);
 
-async function run(fn) {
-  try { await fn(); } catch (err) { console.error(err); toast(err.message || 'Terjadi kesalahan', 'error'); }
+function run(fn) {
+  return Promise.resolve().then(fn).catch(err => { console.error(err); toast(err.message || 'Terjadi kesalahan', 'error'); });
 }
 
 /* ================================================================ events */
@@ -1630,7 +2648,10 @@ document.addEventListener('submit', e => {
   const f = e.target, fn = FORM[f.dataset.form];
   if (!fn) return;
   e.preventDefault();
-  run(() => fn(f, Object.fromEntries(new FormData(f))));
+  if (f.dataset.busy) return;
+  f.dataset.busy = '1';
+  const data = Object.fromEntries(new FormData(f));
+  run(() => fn(f, data)).finally(() => { delete f.dataset.busy; });
 });
 document.addEventListener('input', e => { const fn = INPUT[e.target.dataset.input]; if (fn) fn(e.target, e); });
 document.addEventListener('change', e => { const fn = CHANGE[e.target.dataset.change]; if (fn) run(() => fn(e.target, e)); });
@@ -1640,6 +2661,7 @@ document.addEventListener('keydown', e => {
   }
 });
 $('#modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });
+document.addEventListener('click', e => { if (document.body.classList.contains('more-open') && !e.target.closest('#nav')) document.body.classList.remove('more-open'); });
 window.addEventListener('hashchange', () => run(route));
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushNote(); });
 window.addEventListener('pagehide', () => {

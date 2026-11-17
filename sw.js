@@ -1,5 +1,5 @@
 /* Service worker: menyimpan file aplikasi supaya bisa dibuka offline. */
-const CACHE = 'ruang-pribadi-v3';
+const CACHE = 'ruang-pribadi-v4';
 const ASSETS = ['./', 'index.html', 'app.js', 'style.css', 'config.js', 'manifest.webmanifest',
   'favicon.svg', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
 
